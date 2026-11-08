@@ -55,8 +55,8 @@ JOURNAL.md + journal/YYYY-MM-DD.md   Monday-start weekly pages, TollChat convent
 **`factory-scoreboard-holdout`** (hidden oracles; workers never check it out)
 
 ```
-tasks/T-###/task.json      Mirrors the manifest; binds oracle to spec_sha + base_commit
-tasks/T-###/test_*.py      Black-box pytest + httpx scenarios against the running API
+tasks/<issue>/task.json     Keyed by issue number; binds oracle to spec_sha + base_commit
+tasks/<issue>/test_*.py     Black-box pytest + httpx scenarios against the running API
 conftest.py                Starts `cargo lambda watch` + DynamoDB Local, waits for health
 ```
 
@@ -232,9 +232,9 @@ End-to-end check at the end of week 1 and again after every phase:
 5. On merge, `deploy.yml` applies and the CloudFront URL reflects the change.
 6. `bench.yml` on that task with N=3 writes three JSONL records to S3 and the scoreboard displays them.
 
-## After plan approval
+## Bootstrap (done 2026-11-08)
 
-Outside plan mode: create the two private repos with `gh repo create`, commit this plan
+Created the two private repos with `gh repo create`, commit this plan
 as `PLAN.md` in `factory-scoreboard`, create `JOURNAL.md` and `journal/2026-11-09.md`
 (Monday of week 1), and open week-1 issues. Nothing else is built until Ryan starts
 week 1.
