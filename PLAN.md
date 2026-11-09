@@ -37,7 +37,7 @@ Assumptions I am making (say so if wrong):
 
 ## Repositories
 
-Two private repos on github.com under `rhprasad0` (gh is authenticated):
+Two public repos on github.com under `rhprasad0`, public for transparency (gh is authenticated):
 
 **`factory-scoreboard`** (product + factory code; workers see all of it)
 
@@ -52,7 +52,7 @@ CLAUDE.md            Worker instructions (versioned factory config)
 JOURNAL.md + journal/YYYY-MM-DD.md   Monday-start weekly pages, TollChat convention
 ```
 
-**`factory-scoreboard-holdout`** (hidden oracles; workers never check it out)
+**`factory-scoreboard-holdout`** (oracles; workers are instructed not to read it or check it out)
 
 ```
 tasks/<issue>/task.json     Keyed by issue number; binds oracle to spec_sha + base_commit
@@ -62,9 +62,9 @@ conftest.py                Starts `cargo lambda watch` + DynamoDB Local, waits f
 
 Oracles are **black-box HTTP scenarios in pytest**, not Rust unit tests. Reasons: they
 test the spec, not internals, so a refactor cannot break them; Ryan can write them in
-minutes without Rust fluency; they are StrongDM-style scenarios kept out of the
-workers' sight. CI reads the holdout repo with a read-only deploy key that only
-`oracle.yml` holds.
+minutes without Rust fluency; they are StrongDM-style scenarios that workers are told
+not to read or train on. `CLAUDE.md` carries that instruction and nothing enforces it.
+`oracle.yml` checks out the public holdout repo with no credential.
 
 **PR-to-task mapping**: holdout `tasks/` are keyed by issue number. `oracle.yml` reads
 `Closes #N` from the PR body (the worker prompt requires it) and runs `tasks/N/`. A PR
@@ -130,8 +130,8 @@ No orchestrator. GitHub Issues + labels are the queue; workflows are the station
 
 ## Merge policy
 
-**Default: auto-merge** when build, pass-to-pass, oracle and hygiene are green and the
-PR is not critical. Ryan reviews nothing on these PRs; the hidden oracle is the
+**Default: auto-merge** when build, pass-to-pass and oracle are green and the
+PR is not critical (a hygiene violation makes it critical). Ryan reviews nothing on these PRs; the hidden oracle is the
 reviewer. Every auto-merge is logged with its record so escaped defects can be traced.
 
 **Critical, requires Ryan's approval.** Deterministic, decided by `factory/critical.py`
@@ -156,12 +156,12 @@ an escaped defect; that pair of numbers is what justifies or tightens the policy
 
 ## Security constraints (non-negotiable, in every phase)
 
-- Private repos. Workflows trigger on `pull_request`, never `pull_request_target`.
+- Public repos, for transparency. Workflows trigger on `pull_request`, never `pull_request_target`.
 - Worker jobs hold no AWS credentials. Only `deploy.yml` and the record writer assume AWS roles, via OIDC with repo and branch conditions.
 - `claude-code-action` runs with `timeout-minutes`, `--max-turns`, a tool allowlist, and a `concurrency` group so one worker runs at a time.
 - The OAuth token belongs to Ryan, expires in one year, and bills his Max usage. Record the renewal date in `factory/README.md`. Every commit and PR appears as Ryan or the Claude app.
-- Holdout deploy key is read-only and lives only in the `oracle.yml` environment.
-- Branch protection on `main`: required checks build, oracle, hygiene, critical-classifier; auto-merge allowed; force-push off. A `critical` PR additionally requires one approving review via a ruleset that applies when the label is present (or, if GitHub rulesets cannot key on labels, the classifier check itself stays red until Ryan approves).
+- `CLAUDE.md` tells workers not to read, clone or train on `factory-scoreboard-holdout`.
+- Branch protection on `main`: required checks build, oracle, hygiene, critical-classifier (the hygiene check goes red only if it cannot run, never on a violation, so Ryan can approve past one through the critical path); auto-merge allowed; force-push off. A `critical` PR additionally requires one approving review via a ruleset that applies when the label is present (or, if GitHub rulesets cannot key on labels, the classifier check itself stays red until Ryan approves).
 
 ## Phases (8 weeks, ~10 hrs each)
 
@@ -255,3 +255,4 @@ need a plan Ryan does not have; the action's review example covers it if wanted)
 - Auto-merge by default in a language Ryan reads slowly puts the whole weight on the hidden oracles and the critical classifier. A thin oracle lets a wrong change ship; the week 5-6 audit is where that shows up.
 - The classifier is path- and diff-based, so a behavior-breaking change inside an existing route that keeps the OpenAPI schema unchanged is not critical by rule. The oracle is the only defense there. Say so in the README.
 - The OAuth token is one person's subscription; a leaked token spends Ryan's plan. Rotate if any workflow log ever prints it.
+- Oracles are public and workers are only asked not to read them, so a worker that reads one anyway inflates oracle pass rates. State this limit wherever factory scores are reported.

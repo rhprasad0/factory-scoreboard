@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Factory eval record: one trial, one JSONL line",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "recorded_at",
+    "task",
+    "trial",
+    "config_ref",
+    "base_commit",
+    "pr",
+    "graders",
+    "turns",
+    "wall_clock_seconds"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "recorded_at": { "type": "string" },
+    "task": { "type": "string", "pattern": "^T-[0-9]{3,}$" },
+    "trial": { "type": "integer", "minimum": 1 },
+    "config_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Git ref of the factory configuration this trial ran under"
+    },
+    "base_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "pr": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "The live PR, or null for a bench trial"
+    },
+    "turns": { "type": ["integer", "null"], "minimum": 0 },
+    "wall_clock_seconds": { "type": ["number", "null"], "minimum": 0 },
+    "graders": {
+      "type": "object",
+      "description": "Each grader keeps its own field. Null means it did not run.",
+      "additionalProperties": false,
+      "required": ["build", "pass_to_pass", "oracle", "hygiene", "scope", "human"],
+      "properties": {
+        "build": { "$ref": "#/$defs/verdict" },
+        "pass_to_pass": { "$ref": "#/$defs/verdict" },
+        "oracle": { "$ref": "#/$defs/verdict" },
+        "hygiene": { "$ref": "#/$defs/verdict" },
+        "scope": { "$ref": "#/$defs/verdict" },
+        "human": {
+          "description": "Live PRs only, null on bench trials",
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["merged", "review_minutes", "comments"],
+              "properties": {
+                "merged": { "type": "boolean" },
+                "review_minutes": { "type": "number", "minimum": 0 },
+                "comments": { "type": "integer", "minimum": 0 }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "verdict": { "enum": ["pass", "fail", null] }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Frozen task manifest: factory/tasks/T-###.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["base_commit", "spec_sha", "critical", "created", "source_issue"],
+  "properties": {
+    "base_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "spec_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the issue body, verbatim, as UTF-8"
+    },
+    "critical": { "type": "boolean" },
+    "created": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "source_issue": { "type": "integer", "minimum": 1 }
+  }
+}
