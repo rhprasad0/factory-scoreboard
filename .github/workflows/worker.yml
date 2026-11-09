@@ -43,6 +43,15 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-
       - name: Install cargo-lambda
         run: pipx install cargo-lambda==1.9.2
+      # The scrub needs this sandbox, and the action only sets it up for allowed_non_write_users.
+      - name: Install sandbox dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
+          # Ubuntu 24.04 restricts the unprivileged user namespaces bubblewrap needs.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - id: claude
         # Pinned to an exact release: v1 moves, and a moving worker skews the measurements.
         uses: anthropics/claude-code-action@61a9c274fa7110a66dfafc1bbbced03833eb25fe # v1.0.269
@@ -70,3 +79,14 @@ jobs:
         with:
           name: transcript-issue-${{ github.event.issue.number }}-run-${{ github.run_id }}
           path: ${{ steps.claude.outputs.execution_file }}
+      # The action reports success whenever Claude finishes, even with nothing to show.
+      - name: Require a PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: claude/issue-${{ github.event.issue.number }}
+        run: |
+          count=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq length)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::The worker finished without opening a PR from $BRANCH"
+            exit 1
+          fi
