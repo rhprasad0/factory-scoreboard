@@ -1,0 +1,107 @@
+name: ci
+
+on:
+  pull_request:
+  # Fills the main-scoped cache that PR runs restore. PR caches are not shared.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # Naming bash adds pipefail, without which `| tee` would hide a failing gate.
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: hashFiles('app/Cargo.toml') != ''
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('app/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: Format, lint and test
+        run: |
+          # The job must still report: a required check that never reports blocks the merge.
+          if [ ! -f app/Cargo.toml ]; then
+            echo "No Rust workspace yet, nothing to build."
+            exit 0
+          fi
+          cd app
+          # These must match CLAUDE.md exactly, so workers and CI agree.
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+  gate:
+    if: github.event_name == 'pull_request'
+    name: ${{ matrix.gate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [hygiene, critical-classifier]
+    env:
+      BASE: ${{ github.event.pull_request.base.sha }}
+      HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      # The graders come from main, so a PR cannot rewrite the check that grades it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: gates
+          persist-credentials: false
+      # The PR is only ever read through git here, never executed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the graders
+        working-directory: gates/factory
+        run: |
+          pipx install uv==0.12.5
+          uv sync --locked --no-dev
+      - name: Hygiene
+        if: matrix.gate == 'hygiene'
+        working-directory: pr
+        # A violation stays green here and fires hygiene_failed in the classifier.
+        run: ../gates/factory/.venv/bin/python ../gates/factory/hygiene.py --base "$BASE" --head "$HEAD" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Critical classifier
+        if: matrix.gate == 'critical-classifier'
+        working-directory: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          args=()
+          # The source issue's labels, because a worker can edit the labels on its own PR.
+          issue=$(grep -oiE 'closes #[0-9]+' <<<"$PR_BODY" | head -n 1 | grep -oE '[0-9]+' || true)
+          if [ -n "$issue" ]; then
+            names=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json labels --jq '.labels[].name')
+            while IFS= read -r name; do
+              if [ -n "$name" ]; then args+=(--label "$name"); fi
+            done <<<"$names"
+          fi
+          # shortcut: only reports for now, week 3's merge_policy.py is what holds a critical PR.
+          ../gates/factory/.venv/bin/python ../gates/factory/critical.py --base "$BASE" --head "$HEAD" "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
