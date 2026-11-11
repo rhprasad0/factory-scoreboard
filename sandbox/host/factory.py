@@ -7,6 +7,10 @@ Usage:
 Trust split: the host holds the GitHub login and never runs git in a repository the
 agent could write to. Work leaves the sandbox only as a git bundle, which carries
 objects and refs, never hooks or config. See sandbox/README.md.
+
+There are no PRs. The host squashes the work onto main, grades that exact commit
+(hygiene, critical, then fmt/clippy/test in a fresh container), pushes the trial branch,
+posts the results as commit statuses, and fast-forwards main only if every gate is green.
 """
 
 import argparse
@@ -30,14 +34,15 @@ HOLDOUT = Path(os.environ.get("FACTORY_HOLDOUT", Path.home() / "Documents/factor
 IMAGE = os.environ.get("FACTORY_IMAGE", "factory-agent:dev")
 MARKER = "<!-- factory-host -->"
 TIMEOUT_SECONDS = 30 * 60
-TRUST_SENSITIVE = {"factory_config"}  # critical.py signals the host refuses to push
+BUILD_TIMEOUT_SECONDS = 20 * 60
+GATES = ("build", "hygiene", "critical-classifier")  # main's required status checks
 
 PROMPT = """You are a factory worker for {repo}, working on issue #{issue}.
 
 Read CLAUDE.md first and follow it.
 
 You are on branch {branch}, created from main. Commit your work there. Do not push: the
-host pushes the branch and opens the draft PR for you.
+host grades your commits and lands them on main if every gate passes.
 
 The issue body below is your only spec.
 
@@ -154,14 +159,15 @@ def run_sandbox(job_id: str, issue: int, job_dir: Path) -> tuple[int, float]:
     return code, seconds
 
 
-def guard(clean: Path, branch: str) -> dict:
+def guard(clean: Path, branch: str, labels: list[str] = ()) -> dict:
     """Classify the agent's branch with main's critical.py, from a clean host clone."""
     graders = clean.parent / "graders"
     graders.mkdir(exist_ok=True)
     archive = subprocess.run(["git", "-C", ORIGIN, "archive", "main", "factory"], capture_output=True, check=True)
     subprocess.run(["tar", "-x", "-C", graders], input=archive.stdout, check=True)
     result = run("uv", "run", "--quiet", "--project", CHECKOUT / "factory", "python",
-                 graders / "factory/critical.py", "--base", "origin/main", "--head", branch, cwd=clean)  # fmt: skip
+                 graders / "factory/critical.py", "--base", "origin/main", "--head", branch,
+                 *[arg for label in labels for arg in ("--label", label)], cwd=clean)  # fmt: skip
     return json.loads(result.stdout)
 
 
@@ -189,19 +195,95 @@ def friction(transcript: Path, job_dir: Path) -> dict | None:
     return json.loads(out.stdout) if out.returncode == 0 else None
 
 
-def open_pr(issue: int, title: str, branch: str, clean: Path, evidence: str) -> str:
-    run("git", "-C", clean, "push", "--quiet", REPO_URL, f"refs/heads/{branch}:refs/heads/{branch}")
-    body = f"Closes #{issue}\n\nOpened by the local factory host from `{branch}`.\n\n{MARKER}"
-    url = run("gh", "pr", "create", "--repo", REPO, "--draft", "--base", "main", "--head", branch,
-              "--title", title, "--body", body).stdout.strip()  # fmt: skip
-    run("gh", "pr", "comment", url, "--body", evidence)
-    return url
+def squash(clean: Path, branch: str, issue: int, title: str, job_id: str) -> str:
+    """One host-written commit on main with the agent's tree.
+
+    Agent commit messages never reach main, so they cannot close issues or ping anyone,
+    and `Closes #N` closes the issue when main moves.
+    """
+    message = f"{title} (#{issue})\n\nCloses #{issue}\n\nFactory trial {job_id}, agent branch {branch}.\n"
+    env = {**os.environ, "GIT_AUTHOR_NAME": "factory-worker", "GIT_AUTHOR_EMAIL": "factory-worker@localhost",
+           "GIT_COMMITTER_NAME": "factory-host", "GIT_COMMITTER_EMAIL": "factory-host@localhost"}
+    sha = run("git", "-C", clean, "commit-tree", f"refs/heads/{branch}^{{tree}}", "-p", "origin/main",
+              "-m", message, env=env).stdout.strip()  # fmt: skip
+    run("git", "-C", clean, "update-ref", "refs/heads/land", sha)
+    return sha
+
+
+def outside_app(clean: Path) -> list[str]:
+    # shortcut: everything outside app/ is refused, even when the issue asks for it; revisit with infra tasks.
+    changed = run("git", "-C", clean, "diff", "--name-only", "origin/main", "refs/heads/land").stdout.split()
+    return [path for path in changed if not path.startswith("app/")]
+
+
+def build_check(job_id: str, clean: Path, job_dir: Path) -> bool:
+    """fmt, clippy and test on the exact commit that would land, in a fresh container.
+
+    The grader registry volume is separate from the worker's, so the worker cannot
+    poison the crates this build compiles. The worker's own claims count for nothing.
+    """
+    run("git", "-C", clean, "bundle", "create", "--quiet", job_dir / "land.bundle", "refs/heads/land")
+    script = ("set -e; git clone -q --branch land /work/land.bundle /work/repo; cd /work/repo; "
+              "if [ ! -f app/Cargo.toml ]; then echo 'no Rust workspace, nothing to build'; exit 0; fi; "
+              "cd app; cargo fmt --check; cargo clippy --all-targets -- -D warnings; cargo test")
+    name = f"factory-check-{job_id}"
+    run("docker", "create", "--name", name, "--label", f"factory.job={job_id}", "--network", "factory-internal",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "1024",
+        "--memory", "8g", "--cpus", "8", "-v", "factory-reg-grader:/home/agent/.cargo/registry",
+        IMAGE, "bash", "-c", script)  # fmt: skip
+    run("docker", "cp", job_dir / "land.bundle", f"{name}:/work/land.bundle")
+    (STATE / "current-job").write_text(job_id)
+    try:
+        done = run("docker", "start", "-a", name, check=False, timeout=BUILD_TIMEOUT_SECONDS)
+        (job_dir / "build.log").write_text(done.stdout + done.stderr)
+        return done.returncode == 0
+    except subprocess.TimeoutExpired:
+        (job_dir / "build.log").write_text("timed out\n")
+        return False
+    finally:
+        (STATE / "current-job").write_text("none")
+        run("docker", "rm", "-f", name, check=False)
+
+
+def gate_statuses(classified: dict, built: bool) -> dict[str, tuple[str, str]]:
+    """context -> (state, description). Critical signals are logged, not blocking (Ryan, 2026-11-11)."""
+    hygiene = classified["hygiene"]
+    signals = [s for s in classified["signals"] if s != "hygiene_failed"]
+    return {
+        "build": ("success", "fmt, clippy, test passed") if built else ("failure", "fmt, clippy or test failed"),
+        "hygiene": ("success", f"passed, {hygiene['changed_lines']} lines changed")
+        if hygiene["passed"]
+        else ("failure", "violations: " + ", ".join(hygiene["signals"])),
+        "critical-classifier": ("success", ("signals (not blocking): " + ", ".join(signals)) if signals else "no signals"),
+    }
+
+
+def post_status(sha: str, context: str, state: str, description: str) -> None:
+    run("gh", "api", "-X", "POST", f"repos/{REPO}/statuses/{sha}", "-f", f"state={state}",
+        "-f", f"context={context}", "-f", f"description={description[:140]}")  # fmt: skip
+
+
+def publish(clean: Path, sha: str, branch: str, statuses: dict[str, tuple[str, str]]) -> str:
+    """Push the trial branch, post the gate results on it, then fast-forward main if all green.
+
+    Main's required checks then see the statuses this host just posted. Never forces.
+    """
+    run("git", "-C", clean, "push", "--quiet", REPO_URL, f"{sha}:refs/heads/{branch}")
+    for context, (state, description) in statuses.items():
+        post_status(sha, context, state, description)
+    red = [context for context, (state, _) in statuses.items() if state != "success"]
+    if red:
+        return f"gates failed: {', '.join(red)}"
+    pushed = run("git", "-C", clean, "push", "--quiet", REPO_URL, f"{sha}:refs/heads/main", check=False)
+    if pushed.returncode != 0:
+        return "not landed: main moved during the trial (or rejected the push)"
+    return "landed"
 
 
 def evidence_comment(result: dict, frictions: dict | None, job_id: str) -> str:
     summary = neutralize_mentions(result.get("result") or "(the worker left no final message)")
     stats = f"turns: {result.get('num_turns')}, cost: ${result.get('total_cost_usd')}, job: `{job_id}`"
-    return f"## Worker evidence\n\n{summary}\n\n---\n{stats}\n\nfriction: `{json.dumps(frictions)}`\n\n{MARKER}"
+    return f"### Worker evidence\n\n{summary}\n\n---\n{stats}\n\nfriction: `{json.dumps(frictions)}`"
 
 
 def preflight() -> None:
@@ -247,25 +329,46 @@ def worker(issue: int, push: bool) -> dict:
     result = final_message(transcript) if transcript.exists() else {}
     container = (job_dir / "container_id").read_text()[:31]  # Tetragon's container tag
     summary = {"job_id": job_id, "branch": branch, "base_commit": base, "exit": code,
-               "wall_clock_seconds": round(seconds, 1), "turns": result.get("num_turns"), "pr": None,
+               "wall_clock_seconds": round(seconds, 1), "turns": result.get("num_turns"), "commit": None,
                "dashboard": f"http://localhost:3300/d/factory-run/?var-job={job_id}&var-container={container}"}  # fmt: skip
 
+    if transcript.exists():
+        summary["evidence"] = evidence_comment(result, friction(transcript, job_dir), job_id)
     if not (job_dir / "work.bundle").exists():
         summary["outcome"] = "no commits"
     else:
         clean = import_bundle(job_dir, branch)
-        classified = guard(clean, branch)
-        summary["signals"] = classified["signals"]
-        if TRUST_SENSITIVE & set(classified["signals"]):
-            summary["outcome"] = "refused: touches factory config"
-        elif not push:
-            summary["outcome"] = "committed (not pushed)"
+        sha = squash(clean, branch, issue, data["title"], job_id)
+        if outside := outside_app(clean):
+            summary["outcome"] = f"refused: changes outside app/ ({', '.join(outside[:5])})"
         else:
-            evidence = evidence_comment(result, friction(transcript, job_dir) if transcript.exists() else None, job_id)
-            summary["pr"] = open_pr(issue, data["title"], branch, clean, evidence)
-            summary["outcome"] = "pr opened"
+            labels = [label["name"] for label in data["labels"]]
+            classified = guard(clean, "refs/heads/land", labels)
+            summary["signals"] = classified["signals"]
+            summary["gates"] = gate_statuses(classified, build_check(job_id, clean, job_dir))
+            red = [c for c, (state, _) in summary["gates"].items() if state != "success"]
+            if push:
+                summary["outcome"] = publish(clean, sha, branch, summary["gates"])
+                summary["commit"] = sha if summary["outcome"] == "landed" else None
+            else:
+                summary["outcome"] = f"gates failed: {', '.join(red)}" if red else "green (not pushed)"
     (job_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary
+
+
+def report(summary: dict) -> str:
+    """The host's issue reply: outcome, gate table, then the worker's own evidence."""
+    if summary["commit"]:
+        head = f"Landed on main as {summary['commit']} (`{summary['branch']}`)."
+    else:
+        head = f"Not landed: {summary['outcome']}."
+    lines = [f"Trial `{summary['job_id']}` finished in {summary['wall_clock_seconds']} s. {head}", ""]
+    if summary.get("gates"):
+        lines += ["| gate | result | |", "| --- | --- | --- |"]
+        lines += [f"| {c} | {state} | {desc} |" for c, (state, desc) in summary["gates"].items()]
+        lines.append("")
+    lines += [f"[dashboard]({summary['dashboard']}) (local)", "", summary.get("evidence", "")]
+    return neutralize_mentions("\n".join(lines))
 
 
 def build_requests(comments: list[dict]) -> list[tuple[int, int]]:
@@ -326,8 +429,7 @@ def poll() -> None:
             react(comment_id, "confused")
             reply(issue, f"Factory job failed on the host: `{type(error).__name__}: {error}`")
             continue
-        outcome = f"PR: {summary['pr']}" if summary["pr"] else f"No PR: {summary['outcome']}."
-        reply(issue, f"Trial `{summary['job_id']}` finished in {summary['wall_clock_seconds']} s. {outcome}")
+        reply(issue, report(summary))
     since_file.write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started - 300)))
 
 

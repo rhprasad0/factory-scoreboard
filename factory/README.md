@@ -39,6 +39,10 @@ rewrite the check that grades it.
 
 ## Merge policy
 
+Since 2026-11-11 there are no PRs: the local host lands a trial on `main` when build and
+hygiene are green, and reports critical signals without blocking (`sandbox/README.md`).
+The policy below is the original design and returns with the review station.
+
 Weeks 1-2 have auto-merge off. From week 3 a PR auto-merges when build, pass-to-pass and
 oracle are green and `critical.py` reports no signals. Otherwise it waits for Ryan's
 approval.

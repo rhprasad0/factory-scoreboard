@@ -43,9 +43,9 @@ cargo test
 
 ## Your commits
 
-- Commit your work on the branch named in your prompt. Do not push or open a PR: you
-  have no GitHub access. The factory host pushes the branch and opens a draft PR with
-  `Closes #N`.
+- Commit your work on the branch named in your prompt. Do not push: you have no GitHub
+  access. There is no PR. The factory host squashes your commits into one, reruns the
+  checks above itself, and lands the result on `main` only if every gate passes.
 - End with a final message listing what you ran and what passed. If something could not
-  be run or did not pass, say so. The host posts that message on the PR as the evidence
-  comment.
+  be run or did not pass, say so. The host posts that message on the issue as the
+  evidence.

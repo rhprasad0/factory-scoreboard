@@ -38,9 +38,9 @@ def test_emails_and_lone_at_signs_survive():
     assert factory.neutralize_mentions("a @ b") == "a @ b"
 
 
-def test_evidence_comment_carries_the_marker_and_no_live_mentions():
+def test_evidence_comment_has_no_live_mentions():
     comment = factory.evidence_comment({"result": "done, thanks @rhprasad0", "num_turns": 3}, None, "4-t2-x")
-    assert factory.MARKER in comment and "@rhprasad0" not in comment
+    assert "@rhprasad0" not in comment
 
 
 def test_bundle_import_runs_nothing_the_agent_planted(tmp_path, monkeypatch):
@@ -119,3 +119,88 @@ def test_owner_build_comment_on_an_issue_is_a_request():
 )
 def test_everything_else_is_ignored(over):
     assert factory.build_requests([comment(**over)]) == []
+
+
+@pytest.fixture
+def trial(tmp_path, monkeypatch):
+    """A fake GitHub remote, the host's ORIGIN clone of it, and an imported agent branch."""
+    github = tmp_path / "github.git"
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git("init", "-q", "-b", "main", cwd=seed)
+    (seed / "README.md").write_text("hi\n")
+    git("add", ".", cwd=seed)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base", cwd=seed)
+    git("clone", "-q", "--bare", str(seed), str(github), cwd=tmp_path)
+    origin = tmp_path / "origin.git"
+    git("clone", "-q", "--bare", str(github), str(origin), cwd=tmp_path)
+
+    agent = tmp_path / "agent"
+    git("clone", "-q", str(origin), str(agent), cwd=tmp_path)
+    git("checkout", "-qb", "claude/issue-4-t6", cwd=agent)
+    (agent / "app").mkdir()
+    (agent / "app/lib.rs").write_text("fn health() {}\n")
+    git("add", ".", cwd=agent)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "Closes #5, thanks @someone", cwd=agent)
+    job = tmp_path / "job"
+    job.mkdir()
+    git("bundle", "create", str(job / "work.bundle"), "refs/heads/claude/issue-4-t6", "^origin/main", cwd=agent)
+
+    posted = []
+    monkeypatch.setattr(factory, "ORIGIN", origin)
+    monkeypatch.setattr(factory, "REPO_URL", str(github))
+    monkeypatch.setattr(factory, "post_status", lambda sha, *status: posted.append((sha, *status)))
+    clean = factory.import_bundle(job, "claude/issue-4-t6")
+    sha = factory.squash(clean, "claude/issue-4-t6", 4, "Add GET /health", "4-t6-x")
+    return {"github": github, "seed": seed, "clean": clean, "sha": sha, "posted": posted}
+
+
+GREEN = {gate: ("success", "ok") for gate in factory.GATES}
+
+
+def test_squash_writes_the_host_message_over_the_agent_tree(trial):
+    message = git("log", "-1", "--format=%an%n%B", trial["sha"], cwd=trial["clean"])
+    assert message.startswith("factory-worker\nAdd GET /health (#4)\n\nCloses #4")
+    assert "#5" not in message and "@someone" not in message
+    assert git("rev-parse", f"{trial['sha']}^", cwd=trial["clean"]) == git("rev-parse", "origin/main", cwd=trial["clean"])
+    assert factory.outside_app(trial["clean"]) == []
+
+
+def test_green_gates_land_on_main_with_statuses(trial):
+    assert factory.publish(trial["clean"], trial["sha"], "claude/issue-4-t6", GREEN) == "landed"
+    assert git("rev-parse", "main", cwd=trial["github"]).strip() == trial["sha"]
+    assert git("rev-parse", "claude/issue-4-t6", cwd=trial["github"]).strip() == trial["sha"]
+    assert {p[1] for p in trial["posted"]} == set(factory.GATES)
+
+
+def test_a_red_gate_pushes_the_branch_but_not_main(trial):
+    before = git("rev-parse", "main", cwd=trial["github"])
+    gates = {**GREEN, "build": ("failure", "cargo test failed")}
+    assert factory.publish(trial["clean"], trial["sha"], "claude/issue-4-t6", gates) == "gates failed: build"
+    assert git("rev-parse", "main", cwd=trial["github"]) == before
+    assert ("build", "failure") in {(p[1], p[2]) for p in trial["posted"]}
+
+
+def test_main_moving_during_the_trial_is_never_forced(trial):
+    seed = trial["seed"]
+    (seed / "other.txt").write_text("someone else\n")
+    git("add", ".", cwd=seed)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "meanwhile", cwd=seed)
+    git("push", "-q", str(trial["github"]), "main", cwd=seed)
+    moved = git("rev-parse", "main", cwd=trial["github"])
+    assert factory.publish(trial["clean"], trial["sha"], "claude/issue-4-t6", GREEN).startswith("not landed")
+    assert git("rev-parse", "main", cwd=trial["github"]) == moved
+
+
+def test_gate_table_logs_critical_signals_without_blocking():
+    classified = {"signals": ["dependency", "oversized"], "hygiene": {"passed": True, "signals": {}, "changed_lines": 500}}
+    gates = factory.gate_statuses(classified, built=True)
+    assert all(state == "success" for state, _ in gates.values())
+    assert "dependency" in gates["critical-classifier"][1]
+
+
+def test_a_hygiene_violation_is_a_red_gate():
+    hygiene = {"passed": False, "signals": {"deleted_tests": ["x"]}, "changed_lines": 3}
+    gates = factory.gate_statuses({"signals": ["hygiene_failed"], "hygiene": hygiene}, built=True)
+    assert gates["hygiene"] == ("failure", "violations: deleted_tests")
+    assert gates["critical-classifier"] == ("success", "no signals")

@@ -15,9 +15,20 @@ host (Ryan's gh login)                       sandbox (no GitHub, no key)
 base.bundle from state/origin.git ──cp──►    clone, work, commit (claude -p)
                                              export work.bundle (no network)
 fresh clone ◄── fetch bundle ◄──────cp──
-critical.py guard (refuses factory config)
-push + draft PR + evidence comment
+squash onto main (host-written message, Closes #N)
+refuse anything outside app/
+gates on that exact commit:
+  hygiene + critical.py (from main)
+  fmt, clippy, test ──────────────cp──►     fresh build container, grader registry
+push trial branch, post statuses
+fast-forward main if all green, reply on the issue
 ```
+
+There are no PRs. Main's required checks (`build`, `hygiene`, `critical-classifier`) are
+satisfied by the statuses the host posts on the commit before it moves main. Critical
+signals are reported in the `critical-classifier` status and on the issue but do not
+block (Ryan, 2026-11-11). A hygiene violation, a failed build, or main moving during the
+trial does. The host never force-pushes.
 
 - **Network.** `factory-internal` has no route out, and no external DNS (E1). The proxy
   (`proxy/allowlist.py`) allows only `proxy/allowlist.txt`, logs every flow to
@@ -51,7 +62,8 @@ uv run --project ../../factory python factory.py worker 4 --no-push
 ```
 
 The JSON summary includes a `dashboard` link with the job and container filled in.
-Without `--no-push`, the host pushes `claude/issue-N-t<K>` and opens a draft PR.
+`--no-push` still runs every gate and reports `green (not pushed)` or the failing gates.
+Without it, the host pushes `claude/issue-N-t<K>`, posts the statuses, and lands it on main.
 
 Tests:
 
