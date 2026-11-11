@@ -8,9 +8,10 @@ Trust split: the host holds the GitHub login and never runs git in a repository 
 agent could write to. Work leaves the sandbox only as a git bundle, which carries
 objects and refs, never hooks or config. See sandbox/README.md.
 
-There are no PRs. The host squashes the work onto main, grades that exact commit
-(hygiene, critical, then fmt/clippy/test in a fresh container), pushes the trial branch,
-posts the results as commit statuses, and fast-forwards main only if every gate is green.
+There are no PRs. The host squashes the work onto main and refuses it outright if
+gitleaks finds a secret. Otherwise it grades that exact commit (hygiene, critical, then
+fmt/clippy/test in a fresh container), pushes the trial branch, posts the results as
+commit statuses, and fast-forwards main only if every gate is green.
 """
 
 import argparse
@@ -36,6 +37,7 @@ MARKER = "<!-- factory-host -->"
 TIMEOUT_SECONDS = 30 * 60
 BUILD_TIMEOUT_SECONDS = 20 * 60
 GATES = ("build", "hygiene", "critical-classifier")  # main's required status checks
+GITLEAKS_CONFIG = SANDBOX / "host/gitleaks.toml"
 
 PROMPT = """You are a factory worker for {repo}, working on issue #{issue}.
 
@@ -210,6 +212,24 @@ def squash(clean: Path, branch: str, issue: int, title: str, job_id: str) -> str
     return sha
 
 
+def secrets(clean: Path, job_dir: Path) -> list[str]:
+    """"rule in file" for each secret gitleaks finds in the commit that would be pushed.
+
+    Any finding blocks every push, the trial branch included: the repo is public, so a red
+    status on a pushed branch is already a leak. The config, the ignore file and inline
+    allows all come from the host, never from the worker's tree. Only rule and file are
+    reported, never the match. gitleaks exits 0 on a bad range, so a scan that did not
+    cover exactly the one squash commit raises and the job fails without pushing.
+    """
+    out = job_dir / "gitleaks.json"
+    done = run("gitleaks", "git", "--no-banner", "--no-color", "--redact", "--config", GITLEAKS_CONFIG,
+               "--gitleaks-ignore-path", job_dir, "--ignore-gitleaks-allow", "--log-opts", "origin/main..refs/heads/land",
+               "--report-format", "json", "--report-path", out, "--exit-code", "0", clean)  # fmt: skip
+    if " ERR " in done.stderr or not re.search(r"\b1 commits scanned", done.stderr):
+        raise RuntimeError(f"secrets scan did not cover the land commit: {done.stderr[-300:]}")
+    return sorted({f"{f['RuleID']} in {f['File']}" for f in json.loads(out.read_text())})
+
+
 def outside_app(clean: Path) -> list[str]:
     # shortcut: everything outside app/ is refused, even when the issue asks for it; revisit with infra tasks.
     changed = run("git", "-C", clean, "diff", "--name-only", "origin/main", "refs/heads/land").stdout.split()
@@ -343,7 +363,9 @@ def worker(issue: int, push: bool) -> dict:
     else:
         clean = import_bundle(job_dir, branch)
         sha = squash(clean, branch, issue, data["title"], job_id)
-        if outside := outside_app(clean):
+        if found := secrets(clean, job_dir):
+            summary["outcome"] = f"refused: possible secrets ({', '.join(found[:5])})"
+        elif outside := outside_app(clean):
             summary["outcome"] = f"refused: changes outside app/ ({', '.join(outside[:5])})"
         else:
             labels = [label["name"] for label in data["labels"]]

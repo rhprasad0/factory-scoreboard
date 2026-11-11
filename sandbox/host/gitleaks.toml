@@ -1,0 +1,12 @@
+# Secrets scan config for the landing gate (factory.py) and the CI backstop.
+# The host always passes this with --config, so a .gitleaks.toml a worker commits is ignored.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "preflight probe sends a literal placeholder key, never a real one"
+targetRules = ["curl-auth-header"]
+condition = "AND"
+paths = ['''^sandbox/host/factory\.py$''']
+regexTarget = "match"
+regexes = ['''x-api-key: placeholder''']

@@ -42,7 +42,7 @@ sequenceDiagram
     Proxy->>API: same request, real x-api-key
     SB->>SB: edit app/, run fmt, clippy, test, commit
     SB-->>Host: work.bundle, exported with no network
-    Host->>Host: squash onto main, path rule, hygiene, critical
+    Host->>Host: squash onto main, secrets scan, path rule, hygiene, critical
     Host->>SB: fresh build container: fmt, clippy, test
     Host->>GH: push claude/issue-N-tK, post three commit statuses
     Host->>GH: fast-forward main if all green (Closes #N closes the issue)
@@ -62,8 +62,10 @@ and moves `main` only when every gate is green.
 ```mermaid
 flowchart TD
     B["work.bundle from the sandbox"] --> S["Squash onto main<br/>host-written message with Closes #N"]
-    S --> R{"Changes only under app/?"}
-    R -- no --> X["Refused. Nothing is pushed."]
+    S --> L0{"gitleaks finds nothing?"}
+    L0 -- no --> X["Refused. Nothing is pushed."]
+    L0 -- yes --> R{"Changes only under app/?"}
+    R -- no --> X
     R -- yes --> G["hygiene.py and critical.py<br/>taken from main"]
     G --> C["cargo fmt, clippy, test<br/>fresh container, grader crate registry"]
     C --> P["Push claude/issue-N-tK<br/>post build, hygiene, critical-classifier"]
@@ -76,6 +78,7 @@ flowchart TD
 
 | Gate | Status context | Blocks landing? |
 | --- | --- | --- |
+| Secrets: gitleaks with the host's config, before any push | none (refused, nothing pushed) | Yes |
 | Build: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` | `build` | Yes |
 | Hygiene: no deleted or skipped tests | `hygiene` | Yes |
 | Critical classifier: dependency, data model, API contract, oversized, labeled `critical` | `critical-classifier` | No. Signals are reported on the status and the issue until the review station exists. |
@@ -184,7 +187,8 @@ from a local checkout, for the `spec_sha` check.
 | Trial records | Planned (Stage 5): the record schema still requires `pr` |
 | Review station, deploy, bench | Later, per PLAN.md |
 
-GitHub Actions runs nothing for this repo any more.
+GitHub Actions runs only `gitleaks.yml`, a full-history secrets scan on every push. It is a
+backstop, not a required check: the host's scan has already run before anything is pushed.
 
 ## Known limits
 

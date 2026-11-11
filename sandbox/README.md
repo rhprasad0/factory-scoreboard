@@ -16,7 +16,7 @@ base.bundle from state/origin.git ──cp──►    clone, work, commit (clau
                                              export work.bundle (no network)
 fresh clone ◄── fetch bundle ◄──────cp──
 squash onto main (host-written message, Closes #N)
-refuse anything outside app/
+refuse possible secrets (gitleaks, host config) or anything outside app/
 gates on that exact commit:
   hygiene + critical.py (from main)
   fmt, clippy, test ──────────────cp──►     fresh build container, grader registry
@@ -29,6 +29,14 @@ satisfied by the statuses the host posts on the commit before it moves main. Cri
 signals are reported in the `critical-classifier` status and on the issue but do not
 block (Ryan, 2026-11-11). A hygiene violation, a failed build, or main moving during the
 trial does. The host never force-pushes.
+
+The secrets scan runs before any push, because the repo is public and a pushed trial
+branch is already a leak. It uses `host/gitleaks.toml` with `--config` and ignores
+`gitleaks:allow` comments. The host's clone has no working tree, so a `.gitleaksignore` in
+the worker's diff is never read either. A worker can't switch the scan off from its own diff.
+`.github/workflows/gitleaks.yml` rescans the full history on every push as a backstop for
+pushes that bypass the host. CI does honor a `.gitleaksignore` at the repo root, which only
+a human can add, since the host refuses worker changes outside `app/`.
 
 Known limit: the build container runs the trial's own `build.rs` and tests with the grader
 registry volume writable, so one trial could tamper with crates a later trial's build

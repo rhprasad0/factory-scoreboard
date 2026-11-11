@@ -1,4 +1,6 @@
 import json
+import random
+import string
 import subprocess
 
 import pytest
@@ -122,8 +124,11 @@ def test_everything_else_is_ignored(over):
 
 
 @pytest.fixture
-def trial(tmp_path, monkeypatch):
-    """A fake GitHub remote, the host's ORIGIN clone of it, and an imported agent branch."""
+def trial(tmp_path, monkeypatch, request):
+    """A fake GitHub remote, the host's ORIGIN clone of it, and an imported agent branch.
+
+    Parametrize indirectly with {path: content} to change what the agent commits.
+    """
     github = tmp_path / "github.git"
     seed = tmp_path / "seed"
     seed.mkdir()
@@ -138,8 +143,9 @@ def trial(tmp_path, monkeypatch):
     agent = tmp_path / "agent"
     git("clone", "-q", str(origin), str(agent), cwd=tmp_path)
     git("checkout", "-qb", "claude/issue-4-t6", cwd=agent)
-    (agent / "app").mkdir()
-    (agent / "app/lib.rs").write_text("fn health() {}\n")
+    for path, content in getattr(request, "param", {"app/lib.rs": "fn health() {}\n"}).items():
+        (agent / path).parent.mkdir(parents=True, exist_ok=True)
+        (agent / path).write_text(content)
     git("add", ".", cwd=agent)
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "Closes #5, thanks @someone", cwd=agent)
     job = tmp_path / "job"
@@ -152,7 +158,7 @@ def trial(tmp_path, monkeypatch):
     monkeypatch.setattr(factory, "post_status", lambda sha, *status: posted.append((sha, *status)))
     clean = factory.import_bundle(job, "claude/issue-4-t6")
     sha = factory.squash(clean, "claude/issue-4-t6", 4, "Add GET /health", "4-t6-x")
-    return {"github": github, "seed": seed, "clean": clean, "sha": sha, "posted": posted}
+    return {"github": github, "seed": seed, "clean": clean, "sha": sha, "posted": posted, "job": job}
 
 
 GREEN = {gate: ("success", "ok") for gate in factory.GATES}
@@ -164,6 +170,35 @@ def test_squash_writes_the_host_message_over_the_agent_tree(trial):
     assert "#5" not in message and "@someone" not in message
     assert git("rev-parse", f"{trial['sha']}^", cwd=trial["clean"]) == git("rev-parse", "origin/main", cwd=trial["clean"])
     assert factory.outside_app(trial["clean"]) == []
+
+
+# Built at runtime so this file never holds one; random because gitleaks skips "abcdef...".
+TOKEN = "ghp_" + "".join(random.Random(1).choices(string.ascii_letters + string.digits, k=36))
+
+
+def test_a_clean_trial_has_no_secrets(trial):
+    assert factory.secrets(trial["clean"], trial["job"]) == []
+
+
+@pytest.mark.parametrize(
+    "trial",
+    [
+        {"app/lib.rs": f'const T: &str = "{TOKEN}";\n'},
+        {"app/lib.rs": f'const T: &str = "{TOKEN}"; // gitleaks:allow\n'},
+        {"app/lib.rs": f'const T: &str = "{TOKEN}";\n', ".gitleaksignore": "app/lib.rs:github-pat:1\n"},
+    ],
+    ids=["plain", "inline-allow", "worker-ignore-file"],
+    indirect=True,
+)
+def test_a_leaked_token_is_found_without_echoing_it(trial):
+    assert factory.secrets(trial["clean"], trial["job"]) == ["github-pat in app/lib.rs"]
+    assert TOKEN not in (trial["job"] / "gitleaks.json").read_text()
+
+
+def test_a_scan_that_misses_the_land_commit_fails_closed(trial):
+    git("update-ref", "-d", "refs/heads/land", cwd=trial["clean"])
+    with pytest.raises(RuntimeError, match="did not cover"):
+        factory.secrets(trial["clean"], trial["job"])
 
 
 def test_green_gates_land_on_main_with_statuses(trial):
