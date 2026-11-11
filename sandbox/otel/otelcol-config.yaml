@@ -1,0 +1,84 @@
+# grafana/otel-lgtm 0.37.0's default collector config, plus two filelog receivers:
+# the proxy's flow log and Tetragon's export (filtered to factory containers).
+# start_at: end avoids replaying old lines on restart; the JSONL files stay the record.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  prometheus/collector:
+    config:
+      scrape_configs:
+        - job_name: "opentelemetry-collector"
+          scrape_interval: 1s
+          static_configs:
+            - targets: ["127.0.0.1:8888"]
+  filelog/flows:
+    include: [/factory/flows/flows.jsonl]
+    start_at: end
+    resource:
+      service.name: factory-proxy
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time_ms
+          layout_type: epoch
+          layout: ms
+  filelog/tetragon:
+    include: [/factory/tetragon/tetragon.log]
+    start_at: end
+    resource:
+      service.name: factory-tetragon
+    # Keep the raw JSON line and lift out only the container ID. Parsing every field
+    # into metadata blew past Loki's 500-series query limit; dashboards use `| json`.
+    operators:
+      - type: regex_parser
+        regex: '"docker":"(?P<container>[0-9a-f]+)"'
+        on_error: send_quiet
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+    path: "/ready"
+
+processors:
+  batch:
+
+exporters:
+  otlp_http/metrics:
+    endpoint: http://127.0.0.1:9090/api/v1/otlp
+    tls:
+      insecure: true
+  otlp_http/traces:
+    endpoint: http://127.0.0.1:4418
+    tls:
+      insecure: true
+  otlp_http/logs:
+    endpoint: http://127.0.0.1:3100/otlp
+    tls:
+      insecure: true
+  otlp_grpc/profiles:
+    endpoint: http://127.0.0.1:4040
+    tls:
+      insecure: true
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/traces]
+    metrics:
+      receivers: [otlp, prometheus/collector]
+      processors: [batch]
+      exporters: [otlp_http/metrics]
+    logs:
+      receivers: [otlp, filelog/flows, filelog/tetragon]
+      processors: [batch]
+      exporters: [otlp_http/logs]
+    profiles:
+      receivers: [otlp]
+      exporters: [otlp_grpc/profiles]
