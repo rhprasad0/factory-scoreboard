@@ -63,7 +63,7 @@ def classify(
     # A Terraform table resource is under infra/, so the infra signal already covers it.
     fired = {
         "infra": any(p.startswith("infra/") for p in paths),
-        "factory_config": any(p.startswith((".github/", "factory/")) or p == "CLAUDE.md" for p in paths),
+        "factory_config": any(p.startswith((".github/", "factory/", "sandbox/")) or p == "CLAUDE.md" for p in paths),
         "dependency": any(p.rsplit("/", 1)[-1] in DEPENDENCY_FILES for p in paths),
         "data_model": any(p.startswith(MODEL_PREFIX) for p in paths),
         "api_contract": breaks_contract(openapi_base, openapi_head),

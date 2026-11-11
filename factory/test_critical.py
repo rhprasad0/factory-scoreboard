@@ -28,6 +28,7 @@ def test_plain_app_edit_is_not_critical():
         (".github/workflows/ci.yml", "factory_config"),
         ("factory/critical.py", "factory_config"),
         ("CLAUDE.md", "factory_config"),
+        ("sandbox/host/factory.py", "factory_config"),
         ("app/Cargo.toml", "dependency"),
         ("app/crates/api/Cargo.toml", "dependency"),
         ("app/Cargo.lock", "dependency"),

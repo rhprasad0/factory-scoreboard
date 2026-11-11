@@ -5,3 +5,6 @@ __pycache__/
 *.tfstate*
 .worktrees/
 records/
+sandbox/state/
+sandbox/certs/
+sandbox/.env

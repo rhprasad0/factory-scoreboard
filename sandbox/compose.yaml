@@ -1,0 +1,50 @@
+# Long-running factory services. Agent and build containers are started per job by
+# host/factory.py on the factory-internal network, never by compose.
+name: factory
+
+networks:
+  internal:
+    name: factory-internal
+    internal: true # no route out: the proxy is the only way off this network
+  obs:
+    name: factory-obs
+
+volumes:
+  lgtm-data:
+
+services:
+  proxy:
+    image: mitmproxy/mitmproxy:12.2.3
+    # Rootless Docker maps container root to the host user, so bind mounts stay writable.
+    user: "0:0"
+    command:
+      - mitmdump
+      - --mode
+      - regular@8080
+      - --mode
+      - reverse:http://lgtm:4318@4318
+      - -s
+      - /addon/allowlist.py
+    env_file: .env
+    volumes:
+      - ./proxy:/addon:ro
+      # The image's entrypoint runs mitmdump as whoever owns this dir (the host user here).
+      - ./certs:/home/mitmproxy/.mitmproxy
+      - ./state:/state
+    networks: [internal, obs]
+    restart: unless-stopped
+
+  lgtm:
+    image: grafana/otel-lgtm:0.37.0
+    user: "0:0"
+    ports:
+      - "127.0.0.1:3300:3000"
+    volumes:
+      - lgtm-data:/data
+      - ./otel/otelcol-config.yaml:/otel-lgtm/otelcol-config.yaml:ro
+      - ./grafana/factory-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/factory.yaml:ro
+      - ./grafana/dashboards:/otel-lgtm/factory-dashboards:ro
+      - ./state/flows:/factory/flows:ro
+      - ./state/tetragon:/factory/tetragon:ro
+    networks: [obs]
+    restart: unless-stopped

@@ -1,0 +1,33 @@
+# Monitor-only: outbound connects and opens of sensitive files. The export allowlist
+# (conf.d/export-allowlist) keeps only events from containers, never host processes.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: factory-observe
+spec:
+  kprobes:
+    - call: security_socket_connect
+      syscall: false
+      args:
+        - index: 1
+          type: sockaddr
+      selectors:
+        - matchArgs:
+            - index: 1
+              operator: Family
+              values: ["AF_INET", "AF_INET6"]
+    - call: security_file_open
+      syscall: false
+      args:
+        - index: 0
+          type: file
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Prefix
+              values:
+                - /etc/shadow
+                - /etc/passwd
+                - /proc/1/environ
+                - /home/agent/.claude
+                - /run/secrets
