@@ -14,7 +14,8 @@ volumes:
 
 services:
   proxy:
-    image: mitmproxy/mitmproxy:12.2.3
+    build: ./proxy
+    image: factory-proxy:dev
     # Rootless Docker maps container root to the host user, so bind mounts stay writable.
     user: "0:0"
     command:
@@ -27,7 +28,6 @@ services:
       - /addon/allowlist.py
     env_file: .env
     volumes:
-      - ./proxy:/addon:ro
       # The image's entrypoint runs mitmdump as whoever owns this dir (the host user here).
       - ./certs:/home/mitmproxy/.mitmproxy
       - ./state:/state

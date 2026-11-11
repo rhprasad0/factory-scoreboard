@@ -204,11 +204,33 @@ def evidence_comment(result: dict, frictions: dict | None, job_id: str) -> str:
     return f"## Worker evidence\n\n{summary}\n\n---\n{stats}\n\nfriction: `{json.dumps(frictions)}`\n\n{MARKER}"
 
 
+def preflight() -> None:
+    """Prove the proxy blocks and injects before trusting it with a job.
+
+    mitmproxy keeps serving if its addon unloads, and then it is an open proxy with no
+    key. Both probes are free: a blocked CONNECT and Anthropic's model list.
+    """
+    (STATE / "current-job").write_text("preflight")
+    probe = ("code() { curl -s -o /dev/null -w '%{http_code}' \"$@\"; }; "
+             "echo \"$(code -m 10 https://example.com) "
+             "$(code -m 10 -H 'anthropic-version: 2023-06-01' -H 'x-api-key: placeholder' "
+             "https://api.anthropic.com/v1/models)\"")
+    try:
+        out = run("docker", "run", "--rm", "--network", "factory-internal", "--cap-drop", "ALL",
+                  IMAGE, "bash", "-c", probe, check=False).stdout.split()  # fmt: skip
+    finally:
+        (STATE / "current-job").write_text("none")
+    blocked, models = (out + ["?", "?"])[:2]
+    if blocked not in {"000", "403"} or models != "200":
+        raise SystemExit(f"proxy preflight failed (example.com -> {blocked}, model list -> {models})")
+
+
 def worker(issue: int, push: bool) -> dict:
     data = json.loads(run("gh", "issue", "view", str(issue), "--repo", REPO, "--json", "title,body,labels").stdout)
     if "oracle:ready" not in {label["name"] for label in data["labels"]}:
         raise SystemExit(f"issue #{issue} is not labeled oracle:ready")
     check_spec(issue, data["body"])
+    preflight()
 
     trial = next_trial(issue)
     branch = f"claude/issue-{issue}-t{trial}"
