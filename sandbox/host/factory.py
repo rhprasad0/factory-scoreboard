@@ -219,8 +219,10 @@ def outside_app(clean: Path) -> list[str]:
 def build_check(job_id: str, clean: Path, job_dir: Path) -> bool:
     """fmt, clippy and test on the exact commit that would land, in a fresh container.
 
-    The grader registry volume is separate from the worker's, so the worker cannot
-    poison the crates this build compiles. The worker's own claims count for nothing.
+    The grader registry volume is separate from the worker's, so a worker cannot plant
+    crate sources for this build. The worker's own claims count for nothing.
+    shortcut: the build runs the trial's build.rs and tests with that volume writable, so
+    one trial could tamper with the next trial's crates; fetch, then build --offline read-only.
     """
     run("git", "-C", clean, "bundle", "create", "--quiet", job_dir / "land.bundle", "refs/heads/land")
     script = ("set -e; git clone -q --branch land /work/land.bundle /work/repo; cd /work/repo; "
@@ -274,10 +276,12 @@ def publish(clean: Path, sha: str, branch: str, statuses: dict[str, tuple[str, s
     red = [context for context, (state, _) in statuses.items() if state != "success"]
     if red:
         return f"gates failed: {', '.join(red)}"
-    pushed = run("git", "-C", clean, "push", "--quiet", REPO_URL, f"{sha}:refs/heads/main", check=False)
+    pushed = run("git", "-C", clean, "push", REPO_URL, f"{sha}:refs/heads/main", check=False)
+    (clean.parent / "push-main.log").write_text(pushed.stderr)
     if pushed.returncode != 0:
         return "not landed: main moved during the trial (or rejected the push)"
-    return "landed"
+    # E10: an admin push succeeds even without the statuses, so say when GitHub bypassed them.
+    return "landed (bypassed branch protection)" if "bypass" in pushed.stderr.lower() else "landed"
 
 
 def evidence_comment(result: dict, frictions: dict | None, job_id: str) -> str:
@@ -349,7 +353,7 @@ def worker(issue: int, push: bool) -> dict:
             red = [c for c, (state, _) in summary["gates"].items() if state != "success"]
             if push:
                 summary["outcome"] = publish(clean, sha, branch, summary["gates"])
-                summary["commit"] = sha if summary["outcome"] == "landed" else None
+                summary["commit"] = sha if summary["outcome"].startswith("landed") else None
             else:
                 summary["outcome"] = f"gates failed: {', '.join(red)}" if red else "green (not pushed)"
     (job_dir / "summary.json").write_text(json.dumps(summary, indent=2))
@@ -359,7 +363,7 @@ def worker(issue: int, push: bool) -> dict:
 def report(summary: dict) -> str:
     """The host's issue reply: outcome, gate table, then the worker's own evidence."""
     if summary["commit"]:
-        head = f"Landed on main as {summary['commit']} (`{summary['branch']}`)."
+        head = f"{summary['outcome'].capitalize()} on main as {summary['commit']} (`{summary['branch']}`)."
     else:
         head = f"Not landed: {summary['outcome']}."
     lines = [f"Trial `{summary['job_id']}` finished in {summary['wall_clock_seconds']} s. {head}", ""]

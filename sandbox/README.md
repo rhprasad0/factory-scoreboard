@@ -30,6 +30,10 @@ signals are reported in the `critical-classifier` status and on the issue but do
 block (Ryan, 2026-11-11). A hygiene violation, a failed build, or main moving during the
 trial does. The host never force-pushes.
 
+Known limit: the build container runs the trial's own `build.rs` and tests with the grader
+registry volume writable, so one trial could tamper with crates a later trial's build
+uses. The worker's volume is separate, so a worker can't plant them directly.
+
 - **Network.** `factory-internal` has no route out, and no external DNS (E1). The proxy
   (`proxy/allowlist.py`) allows only `proxy/allowlist.txt`, logs every flow to
   `state/flows/flows.jsonl`, and sets the real `x-api-key` for `api.anthropic.com`. The

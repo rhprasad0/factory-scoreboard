@@ -192,6 +192,17 @@ def test_main_moving_during_the_trial_is_never_forced(trial):
     assert git("rev-parse", "main", cwd=trial["github"]) == moved
 
 
+def test_report_shows_the_landing_gates_and_evidence():
+    summary = {"job_id": "4-t7-x", "wall_clock_seconds": 30.0, "commit": "abc123", "outcome": "landed",
+               "branch": "claude/issue-4-t7", "dashboard": "http://localhost:3300/d/x",
+               "gates": {"build": ["success", "ok"]}, "evidence": "### Worker evidence\n\nthanks @rhprasad0"}
+    text = factory.report(summary)
+    assert "Landed on main as abc123" in text and "| build | success | ok |" in text
+    assert "@rhprasad0" not in text
+    refused = factory.report({**summary, "commit": None, "outcome": "refused: changes outside app/ (x)"})
+    assert "Not landed: refused" in refused
+
+
 def test_gate_table_logs_critical_signals_without_blocking():
     classified = {"signals": ["dependency", "oversized"], "hygiene": {"passed": True, "signals": {}, "changed_lines": 500}}
     gates = factory.gate_statuses(classified, built=True)
