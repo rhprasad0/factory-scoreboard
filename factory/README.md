@@ -71,6 +71,7 @@ uv run pytest
 uv run python critical.py --base origin/main --head HEAD --label critical
 uv run python hygiene.py --base origin/main --head HEAD
 uv run python record.py --out ../records/local.jsonl < trial.json
+uv run python friction.py path/to/claude-execution-output.json
 ```
 
 `records/` is ignored by git. Raw run data lives in workflow artifacts and S3.
