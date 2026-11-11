@@ -1,0 +1,11 @@
+# One poll pass. systemd never starts a second copy while one runs, so jobs stay serial.
+[Unit]
+Description=Factory: claim /build comments and run worker jobs
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documents/factory-scoreboard/sandbox/host
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run --quiet --project ../../factory python factory.py poll
+TimeoutStartSec=45min

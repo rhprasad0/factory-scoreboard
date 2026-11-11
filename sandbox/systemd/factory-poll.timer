@@ -1,0 +1,9 @@
+[Unit]
+Description=Factory: poll GitHub for /build every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=60s
+
+[Install]
+WantedBy=timers.target

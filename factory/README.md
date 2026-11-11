@@ -95,7 +95,7 @@ Actions logs are world-readable, so rotate it at once if any log ever prints it.
 - Both repos are public for transparency. Oracles are visible, and `CLAUDE.md` asks
   workers not to read them. Nothing enforces that, so a worker that reads one anyway
   inflates oracle pass rates. State this limit wherever factory scores are reported.
-- Anyone can open an issue, and adding `factory:build` hands its body to a worker as
+- Anyone can open an issue, and a `/build` comment from Ryan hands its body to a worker as
   the spec. Read a stranger's issue in full, including its raw source, before labeling.
-- Worker transcripts are workflow artifacts, which anyone signed in to GitHub can
-  download. They contain every tool result from the run.
+- Worker transcripts from Actions runs are workflow artifacts, which anyone signed in to
+  GitHub can download. Local runs keep them in `sandbox/state/jobs/` on Ryan's machine.
