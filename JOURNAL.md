@@ -6,7 +6,7 @@ through Sunday; pages are named by the Monday (`journal/YYYY-MM-DD.md`).
 
 | Week | Work | Recorded result |
 | --- | --- | --- |
-| [November 9-15](journal/2026-11-09.md) | Week 1: commit zero is an eval task | pending |
+| [November 9-15](journal/2026-11-09.md) | Week 1: commit zero is an eval task | T-001 trial 1: build, oracle and hygiene passed; awaiting human review |
 
 ## Maintaining the journal
 
