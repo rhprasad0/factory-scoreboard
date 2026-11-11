@@ -18,7 +18,7 @@ spec alone.
 ## Where you may work
 
 - Edit only under `app/` unless the issue says otherwise. Do not touch `factory/`,
-  `.github/`, `infra/` or this file.
+  `sandbox/`, `.github/`, `infra/` or this file.
 - Do not delete, ignore or skip a test to make a check pass.
 - Add a dependency only when the spec cannot be met without it.
 - Do not look for or use AWS credentials. The job has none.
@@ -31,7 +31,7 @@ spec alone.
   response.
 - DynamoDB item types live under `app/crates/api/src/model/`.
 
-## Before you open the PR
+## Before you finish
 
 Run these from `app/` and fix what fails. All three must pass:
 
@@ -41,8 +41,11 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-## The PR
+## Your commits
 
-- Open a draft PR with `Closes #N` in the body, where N is the issue number.
-- Add an evidence comment listing what you ran and what passed. If something could not
-  be run or did not pass, say so.
+- Commit your work on the branch named in your prompt. Do not push or open a PR: you
+  have no GitHub access. The factory host pushes the branch and opens a draft PR with
+  `Closes #N`.
+- End with a final message listing what you ran and what passed. If something could not
+  be run or did not pass, say so. The host posts that message on the PR as the evidence
+  comment.
