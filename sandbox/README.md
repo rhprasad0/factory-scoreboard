@@ -87,3 +87,4 @@ uv run --project ../../factory --with pytest pytest -q
 | E6 Tetragon | Works on kernel 7.0 with rootless Docker; events carry a 31-character container ID. Other containers on the machine show up too; the dashboard filters by container. |
 | E9 egress | Blocked hosts get a 403 and are logged; direct IPs fail; lgtm and Grafana are unreachable. |
 | E12 bundle | Hooks and `core.fsmonitor` planted in the agent's repo never run on the host. |
+| E10 statuses | Main's protection accepted the factory's push on the statuses it posted, with no admin bypass (t7, 2026-11-11). |
