@@ -123,10 +123,10 @@ No orchestrator. GitHub Issues + labels are the queue; workflows are the station
 2. **Oracle** (human in weeks 1-4, agent experiment in weeks 5-6): scenarios written from the spec alone, before any implementation exists, committed to the holdout repo. Label `oracle:ready` is required before a worker may start.
 3. **Worker** (moved to `sandbox/` on 2026-11-11: Ryan comments `/build`, the local host runs the job, grades it and lands it on `main` with no PR, see stations 4 and 6; the Actions design below is history) (`worker.yml`): `on: issues: [labeled]` with `if: github.event.label.name == 'factory:build'` on the job (the action's `label_trigger` input is for tag mode and is ignored once `prompt` is set, confirmed in `src/modes/detector.ts` at v1.0.269). claude-code-action in automation mode, prompt = issue body + CLAUDE.md conventions, must put `Closes #N` in the PR body. Opens a **draft** PR with an evidence comment (what it ran, what passed). Bash allowlist: `cargo`, `git`, `gh pr`, plus file tools. `cargo` fetches crates, so the job has network; what it does not have is any AWS credential.
 4. **Deterministic CI** (since 2026-11-11 run by the local host inside the worker job, on the squashed commit before it lands; `ci.yml` is deleted. The original design follows) (`ci.yml` on `pull_request`): build, pass-to-pass, hygiene, and the critical-change classifier (`factory/critical.py`, see Merge policy). On PRs touching `infra/**`, a read-only `terraform plan` job posts the plan so Ryan sees the exact effects before approving.
-5. **Oracle gate** (`oracle.yml` on `pull_request`): checks out holdout, runs the task's scenarios against the PR branch with DynamoDB Local. Required status check. Logs print only opaque scenario IDs and pass/fail, never assertion text or request bodies, so a retry or a reviewer reading check logs cannot learn the holdout.
+5. **Oracle gate** (since 2026-11-12 a fourth host gate, `oracle`, run in its own container on the squashed commit after the build gate; the holdout comes from the host's checkout at a recorded commit and only counts reach GitHub. The original design follows) (`oracle.yml` on `pull_request`): checks out holdout, runs the task's scenarios against the PR branch with DynamoDB Local. Required status check. Logs print only opaque scenario IDs and pass/fail, never assertion text or request bodies, so a retry or a reviewer reading check logs cannot learn the holdout.
 6. **Merge policy** (since 2026-11-11: no PRs. The host fast-forwards `main` when build and hygiene are green; critical signals are reported but do not block until the review station exists. The original design follows) (`factory/merge_policy.py`, called from CI): marks the PR ready and enables GitHub native auto-merge unless the PR is critical, in which case it adds the `critical` label, requests Ryan's review, and auto-merge stays off until he approves. Merges performed with the repository `GITHUB_TOKEN` do not start `on: push` workflows, so auto-merge must be enabled with the Claude App token or a fine-grained PAT or `deploy.yml` never fires; verify in week 3 before auto-merge goes live.
 7. **Deploy** (`deploy.yml` on push to `main`): `cargo lambda build --release --arm64`, `terraform apply` via OIDC. The only job with AWS write access.
-8. **Bench** (`bench.yml`, `workflow_dispatch` with inputs: task list, N, config ref): matrix of trials, each a worker run from the frozen commit, all graders, records to S3, scratch branches deleted.
+8. **Bench** (open as of 2026-11-12: likely a bench mode of the local host that runs N trials per task from the frozen commit without landing, writing records with `commit` and `pr: null`; not decided. The original design follows) (`bench.yml`, `workflow_dispatch` with inputs: task list, N, config ref): matrix of trials, each a worker run from the frozen commit, all graders, records to S3, scratch branches deleted.
 
 ## Merge policy
 
@@ -162,7 +162,7 @@ an escaped defect; that pair of numbers is what justifies or tightens the policy
 - `claude-code-action` runs with `timeout-minutes`, `--max-turns`, a tool allowlist, and a `concurrency` group so one worker runs at a time.
 - The OAuth token belongs to Ryan, expires in one year, and bills his Max usage. Record the renewal date in `factory/README.md`. Every commit and PR appears as Ryan or the Claude app.
 - `CLAUDE.md` tells workers not to read, clone or train on `factory-scoreboard-holdout`.
-- Branch protection on `main`: required checks build, oracle, hygiene, critical-classifier (the hygiene check goes red only if it cannot run, never on a violation, so Ryan can approve past one through the critical path); auto-merge allowed; force-push off. A `critical` PR additionally requires one approving review via a ruleset that applies when the label is present (or, if GitHub rulesets cannot key on labels, the classifier check itself stays red until Ryan approves).
+- Branch protection on `main` (2026-11-12: the host posts all four statuses itself before it fast-forwards main; there is no auto-merge and no critical review ruleset until the review station exists): required checks build, oracle, hygiene, critical-classifier (the hygiene check goes red only if it cannot run, never on a violation, so Ryan can approve past one through the critical path); auto-merge allowed; force-push off. A `critical` PR additionally requires one approving review via a ruleset that applies when the label is present (or, if GitHub rulesets cannot key on labels, the classifier check itself stays red until Ryan approves).
 
 ## Phases (8 weeks, ~10 hrs each)
 
@@ -182,11 +182,13 @@ Done when: one issue in, one draft PR out, one eval record written, journal page
 
 Read first: Stripe "Minions" part 2 (blueprints, two CI rounds); StrongDM "Software factories and the agentic moment" (scenarios as holdout).
 
-1. Terraform in `infra/`: Lambda, HTTP API, DynamoDB table, S3 + CloudFront, eval-records bucket, two OIDC roles (deploy, record-writer). Copy patterns from `nova-toll-budget-agent/infra/iam.tf` and backend config. `deploy.yml` on push to `main`.
-2. `oracle.yml`: holdout checkout, DynamoDB Local service container, `cargo lambda watch`, pytest. Make it a required check.
-3. `bench.yml` with a matrix over tasks × N and the record writer.
-4. Freeze T-001 through T-005 (health plus the frozen local-run contract, records table schema with `DYNAMODB_ENDPOINT` override, POST /records, GET /records, static index page). Each gets a spec, an oracle, then a worker run as a live PR. Merge by hand.
-5. First baseline: `bench.yml` on T-001..T-005, N=3. Measure how many worker runs fit in a Max usage window; set the bench cadence from that measurement, not from hope.
+(Rewritten 2026-11-12 for the no-PR local factory. The original items assumed PRs, Actions workers and `oracle.yml`; they are in git history.)
+
+1. **Oracle gate first.** A fourth host gate, `oracle`: the task's holdout scenarios run against the squashed commit in a container, after the build gate and before main moves, and `oracle` joins main's required checks. Without it every task lands on build and hygiene alone. DynamoDB Local joins the gate when T-003 needs a store.
+2. **Terraform in `infra/`**: Lambda, HTTP API, DynamoDB table, S3 + CloudFront, eval-records bucket, two OIDC roles (deploy, record-writer). Copy patterns from `nova-toll-budget-agent/infra/iam.tf` and backend config. `deploy.yml` on push to `main`; the host pushes main with Ryan's credentials, which do start `on: push` workflows (the gitleaks run on `373b9e2` showed it). Open: whether a host landing should wait for the deploy, and how a failed deploy is reported.
+3. **Bench**: N trials per task from the frozen commit, all graders, records written with `commit` and `pr: null`, nothing landed. Open: a bench mode of the local host (likely, since workers no longer run on Actions) or `bench.yml`.
+4. **Freeze T-002 through T-005** (the frozen local-run contract, records table schema with `DYNAMODB_ENDPOINT` override, POST /records, GET /records, static index page). Each gets a spec issue, an oracle in the holdout repo, `oracle:ready`, then `/build`; the host lands it if every gate is green.
+5. **First baseline**: bench T-001..T-005, N=3. The worker now bills per token on an API key, so measure dollars per trial alongside turns and wall-clock, and set the bench cadence from that measurement, not from hope.
 
 Done when: `https://<cloudfront>/` serves the index page, 5 tasks frozen, a baseline table with spread is in the journal.
 
@@ -224,14 +226,14 @@ Done when: the A/B result with its spread is in the journal and README, and the 
 
 ## Verification
 
-End-to-end check at the end of week 1 and again after every phase:
+End-to-end check at the end of week 1 and again after every phase (steps 2-4 and 6 rewritten 2026-11-12 for the no-PR local factory):
 
 1. Open an issue with a spec. Write its oracle in the holdout repo. Add `factory:build`.
-2. `worker.yml` runs, pushes `claude/...`, opens a draft PR with an evidence comment, and holds no AWS credentials (check the job's permissions block and logs).
-3. `ci.yml` and `oracle.yml` run on the PR; the oracle fails if the oracle scenario is deliberately wrong, and passes when corrected.
-4. The merge policy enables auto-merge, or flags `critical` and requests Ryan's review. Test both: one plain PR, one that adds a dependency.
-5. On merge, `deploy.yml` applies and the CloudFront URL reflects the change.
-6. `bench.yml` on that task with N=3 writes three JSONL records to S3 and the scoreboard displays them.
+2. `/build` on the issue: the host runs the worker in the sandbox, squashes its work, and posts `build`, `hygiene`, `critical-classifier` and `oracle` on the commit. The worker container holds no AWS or GitHub credentials (check `sandbox_args` and the proxy flow log).
+3. The `oracle` status fails if the oracle scenario is deliberately wrong, and passes when corrected.
+4. A green trial fast-forwards main without an admin bypass; a red gate leaves main untouched. Critical signals are reported, not blocking, until the review station exists.
+5. On landing, `deploy.yml` applies and the CloudFront URL reflects the change.
+6. A bench run on that task with N=3 writes three JSONL records to S3 and the scoreboard displays them.
 
 ## Bootstrap (done 2026-11-08)
 
@@ -250,10 +252,11 @@ need a plan Ryan does not have; the action's review example covers it if wanted)
 
 ## Risks to know
 
-- Max usage windows may cap how many bench trials run per day. Week 2 measures this before the suite grows.
-- Rust build times on `ubuntu-latest` without a warm cache will be several minutes per job; `actions/cache` on `~/.cargo` and `target/` is in `ci.yml` from day one. The 30-minute worker timeout may be tight on a cold build; week 1 measures it.
-- Auto-merge with the repository `GITHUB_TOKEN` can land PRs on `main` without a deploy. Verified in week 3 before auto-merge is enabled.
+- Max usage windows may cap how many bench trials run per day. Week 2 measures this before the suite grows. (2026-11-12: the worker now bills per token on an API key, so the limit is dollars, not a usage window.)
+- Rust build times on `ubuntu-latest` without a warm cache will be several minutes per job; `actions/cache` on `~/.cargo` and `target/` is in `ci.yml` from day one. The 30-minute worker timeout may be tight on a cold build; week 1 measures it. (Measured: a cold build fit easily, and builds now run locally.)
+- Auto-merge with the repository `GITHUB_TOKEN` can land PRs on `main` without a deploy. Verified in week 3 before auto-merge is enabled. (No longer applies as of 2026-11-12: there is no auto-merge, and the host pushes main with Ryan's credentials, which start push workflows.)
 - Auto-merge by default in a language Ryan reads slowly puts the whole weight on the hidden oracles and the critical classifier. A thin oracle lets a wrong change ship; the week 5-6 audit is where that shows up.
 - The classifier is path- and diff-based, so a behavior-breaking change inside an existing route that keeps the OpenAPI schema unchanged is not critical by rule. The oracle is the only defense there. Say so in the README.
+- The worker's evidence comment is posted on the public issue without a secrets scan (open as of 2026-11-12).
 - The OAuth token is one person's subscription; a leaked token spends Ryan's plan. Rotate if any workflow log ever prints it.
 - Oracles are public and workers are only asked not to read them, so a worker that reads one anyway inflates oracle pass rates. State this limit wherever factory scores are reported.
