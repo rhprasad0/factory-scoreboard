@@ -94,9 +94,12 @@ def refresh_origin() -> str:
     return run("git", "-C", ORIGIN, "rev-parse", "main").stdout.strip()
 
 
-def agent_env(job_id: str, issue: int) -> list[str]:
+PLACEHOLDER_KEY = "placeholder-the-proxy-sets-the-real-key"
+
+
+def agent_env(job_id: str, issue: int, key: str = PLACEHOLDER_KEY) -> list[str]:
     env = {
-        "ANTHROPIC_API_KEY": "placeholder-the-proxy-sets-the-real-key",
+        "ANTHROPIC_API_KEY": key,  # the proxy replaces it; evals pass a canary
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",  # E5: OTel still flows, noise stops
         "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
         "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
@@ -129,12 +132,12 @@ def sandbox_args(job_id: str, volume: str, registry: str) -> list[str]:
     ]  # fmt: skip
 
 
-def run_sandbox(job_id: str, issue: int, job_dir: Path) -> tuple[int, float]:
+def run_sandbox(job_id: str, issue: int, job_dir: Path, key: str = PLACEHOLDER_KEY) -> tuple[int, float]:
     """Run the agent; return (exit code, seconds). Outputs land in job_dir."""
     volume = f"factory-job-{job_id}"
     run("docker", "volume", "create", volume)
     name = f"factory-job-{job_id}"
-    run("docker", "create", *sandbox_args(job_id, volume, "factory-reg-worker"), *agent_env(job_id, issue),
+    run("docker", "create", *sandbox_args(job_id, volume, "factory-reg-worker"), *agent_env(job_id, issue, key),
         IMAGE, "run-agent.sh")  # fmt: skip
     run("docker", "cp", job_dir / "in", f"{name}:/work/in")
     # Tetragon tags events with this ID (first 31 chars), so the dashboard can find the job.
