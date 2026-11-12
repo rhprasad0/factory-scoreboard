@@ -428,13 +428,14 @@ def worker(issue: int, push: bool) -> dict:
     run("git", "-C", ORIGIN, "bundle", "create", "--quiet", job_dir / "in/base.bundle", "HEAD", "main")
     (job_dir / "in/branch").write_text(branch)
     (job_dir / "in/prompt.txt").write_text(PROMPT.format(repo=REPO, issue=issue, branch=branch, body=data["body"]))
+    holdout = holdout_snapshot(issue, job_dir / "oracle")  # before the paid run; pins the oracle the trial is graded on
 
     code, seconds = run_sandbox(job_id, issue, job_dir)
     transcript = job_dir / "transcript.jsonl"
     result = final_message(transcript) if transcript.exists() else {}
     container = (job_dir / "container_id").read_text()[:31]  # Tetragon's container tag
     summary = {"job_id": job_id, "branch": branch, "base_commit": base, "exit": code,
-               "wall_clock_seconds": round(seconds, 1), "turns": result.get("num_turns"), "commit": None,
+               "wall_clock_seconds": round(seconds, 1), "turns": result.get("num_turns"), "commit": None, "holdout": holdout,
                "dashboard": f"http://localhost:3300/d/factory-run/?var-job={job_id}&var-container={container}"}  # fmt: skip
 
     if transcript.exists():
@@ -453,8 +454,7 @@ def worker(issue: int, push: bool) -> dict:
             classified = guard(clean, "refs/heads/land", labels)
             summary["signals"] = classified["signals"]
             built = build_check(job_id, clean, job_dir)
-            summary["holdout"] = holdout_snapshot(issue, job_dir / "oracle")
-            oracle = oracle_check(job_id, job_dir, summary["holdout"]) if built else ("failure", "not run: build failed")
+            oracle = oracle_check(job_id, job_dir, holdout) if built else ("failure", "not run: build failed")
             summary["gates"] = gate_statuses(classified, built, oracle)
             red = [c for c, (state, _) in summary["gates"].items() if state != "success"]
             if push:
