@@ -99,7 +99,7 @@ timeout. N=3 trials per task in benchmarks (pass^3 is the TollChat convention).
 | oracle | code | Hidden scenarios pass (fail-to-pass). The decisive grader |
 | hygiene | code | No edits outside `app/**` unless the issue asks; no deleted or skipped tests; diff size |
 | scope | model | Rubric judge (Haiku 5.5 first, upgrade if agreement is poor): binary verdict, did the diff do what the spec asked and nothing else. Calibrated against Ryan's binary hand labels on 20-30 PRs; Cohen's kappa ≥ 0.8 before its score counts |
-| human | human | Merge decision, review minutes, comments left. Only on live PRs, not bench trials |
+| human | human | Merge decision, review minutes, comments left. Only on critical changes Ryan actually reviews; null on non-critical landings and bench trials (since 2026-11-12) |
 
 **Metrics reported** per factory configuration: pass@1, pass^3, oracle pass rate,
 hygiene violation rate, judge scope mean, turns and wall-clock per trial (cost proxy
@@ -148,8 +148,9 @@ from the diff and the issue, not by the model. A PR is critical if any of these 
 | Issue labeled `critical` by Ryan, or diff over 400 changed lines | Operator judgment; large changes are hard to oracle |
 | Judge scope verdict is "out of scope" (only after calibration, weeks 3-4) | The change did more than the spec asked |
 
-Anything else auto-merges. Weeks 1-2 run with auto-merge **off** while the gates are
-proven on five tasks; from week 3 the policy above is live. The classifier is itself
+Anything else auto-merges. (2026-11-12: the original plan held auto-merge **off** in
+weeks 1-2 while Ryan reviewed every change. Dropped: Ryan does not review non-critical
+changes from week 1, and the oracle is the reviewer of record from the first task.) The classifier is itself
 tested (`factory/test_critical.py`) with one fixture diff per signal. The journal records
 the rate of PRs flagged critical and every case where a non-critical auto-merge caused
 an escaped defect; that pair of numbers is what justifies or tightens the policy.

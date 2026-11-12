@@ -50,7 +50,7 @@
         "hygiene": { "$ref": "#/$defs/verdict" },
         "scope": { "$ref": "#/$defs/verdict" },
         "human": {
-          "description": "Live PRs only, null on bench trials",
+          "description": "Only when Ryan reviewed the change (critical changes); null otherwise",
           "oneOf": [
             { "type": "null" },
             {
