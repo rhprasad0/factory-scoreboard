@@ -20,15 +20,18 @@ refuse possible secrets (gitleaks, host config) or anything outside app/
 gates on that exact commit:
   hygiene + critical.py (from main)
   fmt, clippy, test ──────────────cp──►     fresh build container, grader registry
+  holdout tasks/<N> + land.bundle ─cp──►     oracle container, no network, registry read-only
 push trial branch, post statuses
 fast-forward main if all green, reply on the issue
 ```
 
-There are no PRs. Main's required checks (`build`, `hygiene`, `critical-classifier`) are
+There are no PRs. Main's required checks (`build`, `hygiene`, `critical-classifier`, `oracle`) are
 satisfied by the statuses the host posts on the commit before it moves main. Critical
 signals are reported in the `critical-classifier` status and on the issue but do not
-block (Ryan, 2026-11-11). A hygiene violation, a failed build, or main moving during the
-trial does. The host never force-pushes.
+block (Ryan, 2026-11-11). A hygiene violation, a failed build, a failed or missing oracle,
+or main moving during the trial does. The oracle comes from the holdout checkout's
+committed HEAD (uncommitted edits fail the job), and its status carries counts and the
+holdout commit only; the pytest log stays in the job directory. The host never force-pushes.
 
 The secrets scan runs before any push, because the repo is public and a pushed trial
 branch is already a leak. It uses `host/gitleaks.toml` with `--config` and ignores

@@ -44,7 +44,8 @@ sequenceDiagram
     SB-->>Host: work.bundle, exported with no network
     Host->>Host: squash onto main, secrets scan, path rule, hygiene, critical
     Host->>SB: fresh build container: fmt, clippy, test
-    Host->>GH: push claude/issue-N-tK, post three commit statuses
+    Host->>SB: oracle container, no network: holdout tests against the app
+    Host->>GH: push claude/issue-N-tK, post four commit statuses
     Host->>GH: fast-forward main if all green (Closes #N closes the issue)
     Host->>GH: reply on the issue: gates, dashboard link, worker evidence
 ```
@@ -68,8 +69,9 @@ flowchart TD
     R -- no --> X
     R -- yes --> G["hygiene.py and critical.py<br/>taken from main"]
     G --> C["cargo fmt, clippy, test<br/>fresh container, grader crate registry"]
-    C --> P["Push claude/issue-N-tK<br/>post build, hygiene, critical-classifier"]
-    P --> Q{"All three green?"}
+    C --> O["holdout tests for the task<br/>container with no network"]
+    O --> P["Push claude/issue-N-tK<br/>post build, hygiene, critical-classifier, oracle"]
+    P --> Q{"All four green?"}
     Q -- no --> K["Branch kept for inspection.<br/>main untouched."]
     Q -- yes --> M{"Fast-forward main?"}
     M -- "no, main moved" --> N["Not landed. Never forced."]
@@ -82,7 +84,7 @@ flowchart TD
 | Build: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` | `build` | Yes |
 | Hygiene: no deleted or skipped tests | `hygiene` | Yes |
 | Critical classifier: dependency, data model, API contract, oversized, labeled `critical` | `critical-classifier` | No. Signals are reported on the status and the issue until the review station exists. |
-| Oracle: hidden tests against the running app | `oracle` | Planned (Stage 4) |
+| Oracle: the task's holdout tests against the app under `cargo lambda watch`, no network, holdout commit recorded | `oracle` | Yes. Not run if the build fails; no scenarios, a skipped scenario or a harness error is red too. |
 
 Why the gates can be trusted:
 
@@ -92,7 +94,7 @@ Why the gates can be trusted:
   counts for nothing.
 - **The host writes the commit message.** Agent text never reaches main's history, so it
   can't close other issues or ping anyone.
-- **Branch protection enforces the gates.** `main` requires the three statuses, and the
+- **Branch protection enforces the gates.** `main` requires the four statuses, and the
   host posts them on the commit before it pushes. The first live landing (t7) was
   accepted on those statuses alone, with no admin bypass.
 
@@ -172,8 +174,9 @@ records/             trial records (JSONL), from Stage 5
 journal/             weekly experiment pages
 ```
 
-The holdout oracles live in a separate repo. The host reads only `tasks/<issue>/task.json`
-from a local checkout, for the `spec_sha` check.
+The holdout oracles live in a separate repo. The host reads `tasks/<issue>/task.json` from
+a local checkout for the `spec_sha` check, and exports `conftest.py`, `pyproject.toml` and
+`tasks/<issue>/` at its committed HEAD into the oracle container. The worker never sees them.
 
 ## Status
 
@@ -183,8 +186,8 @@ from a local checkout, for the `spec_sha` check.
 | Worker | Live, local sandbox (since 2026-11-11) |
 | Build, hygiene, critical gates | Live, run by the host before landing |
 | Landing on `main` | Live, no PRs. First landing: T-001, trial t7, `e7fe1cf` |
-| Oracle gate | Planned (Stage 4): app and DynamoDB Local offline, holdout tests in a separate container |
-| Trial records | Planned (Stage 5): the record schema still requires `pr` |
+| Oracle gate | Live (since 2026-11-12), one container with no network; DynamoDB Local arrives with T-003 |
+| Trial records | Written by hand with `factory/record.py`; `pr` is null and `commit` names the graded commit |
 | Review station, deploy, bench | Later, per PLAN.md |
 
 GitHub Actions runs only `gitleaks.yml`, a full-history secrets scan on every push. It is a
@@ -197,6 +200,10 @@ backstop, not a required check: the host's scan has already run before anything 
 - **The grader registry is writable during the build.** The build container runs the
   trial's own build scripts and tests, so one trial could tamper with crates a later
   trial's build uses.
+- **The oracle shares a container with trial code.** The app runs where the scenarios
+  are, so a hostile trial could read or rewrite them. There is no network to send them
+  out, and the holdout is public anyway; split the app and the tests into two containers
+  before trusting a hostile worker.
 - **Everything outside `app/` is refused,** even when an issue asks for it. Infra tasks
   will need a rule for that.
 - **Critical changes land.** Signals are reported, not enforced, until the review station

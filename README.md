@@ -24,6 +24,6 @@ flowchart LR
 - [Worker instructions](CLAUDE.md): the rules the worker follows.
 - Oracles live in the separate public [holdout repository](https://github.com/rhprasad0/factory-scoreboard-holdout). The worker's sandbox has no route to GitHub.
 
-**Status (2026-11-11):** the worker and its gates run locally, and GitHub Actions runs
-nothing for this repo. T-001 (`GET /health`) was the first task the factory landed on
-`main` by itself. The oracle gate and trial records are next.
+**Status (2026-11-12):** the worker and its gates run locally, including the hidden oracle,
+and GitHub Actions runs only a backstop secrets scan. T-001 (`GET /health`) was the first
+task the factory landed on `main` by itself. Infra, deploy and the bench are next.

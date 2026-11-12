@@ -240,13 +240,58 @@ def test_report_shows_the_landing_gates_and_evidence():
 
 def test_gate_table_logs_critical_signals_without_blocking():
     classified = {"signals": ["dependency", "oversized"], "hygiene": {"passed": True, "signals": {}, "changed_lines": 500}}
-    gates = factory.gate_statuses(classified, built=True)
+    gates = factory.gate_statuses(classified, built=True, oracle=("success", "1/1 scenarios passed"))
     assert all(state == "success" for state, _ in gates.values())
     assert "dependency" in gates["critical-classifier"][1]
 
 
 def test_a_hygiene_violation_is_a_red_gate():
     hygiene = {"passed": False, "signals": {"deleted_tests": ["x"]}, "changed_lines": 3}
-    gates = factory.gate_statuses({"signals": ["hygiene_failed"], "hygiene": hygiene}, built=True)
+    gates = factory.gate_statuses({"signals": ["hygiene_failed"], "hygiene": hygiene}, built=True, oracle=("success", "ok"))
     assert gates["hygiene"] == ("failure", "violations: deleted_tests")
     assert gates["critical-classifier"] == ("success", "no signals")
+
+
+def junit(tests, failures=0, errors=0, skipped=0):
+    return (f'<testsuites><testsuite name="pytest" tests="{tests}" failures="{failures}" '
+            f'errors="{errors}" skipped="{skipped}"/></testsuites>')
+
+
+@pytest.mark.parametrize(
+    "code, xml, state",
+    [
+        (0, junit(2), "success"),
+        (1, junit(2, failures=1), "failure"),
+        (1, junit(1, errors=1), "failure"),  # the app never came up
+        (5, junit(0), "error"),  # no scenarios collected
+        (0, junit(2, skipped=1), "error"),  # a skipped scenario is not a pass
+        (2, None, "error"),
+        (None, None, "error"),  # timed out
+    ],
+    ids=["pass", "fail", "app-down", "empty", "skipped", "no-junit", "timeout"],
+)
+def test_oracle_verdict_fails_closed(code, xml, state):
+    assert factory.oracle_verdict(code, xml)[0] == state
+
+
+def test_oracle_verdict_reports_counts_only():
+    assert factory.oracle_verdict(1, junit(3, failures=1)) == ("failure", "1 of 3 scenarios failed")
+
+
+def test_holdout_snapshot_exports_one_committed_task(tmp_path):
+    holdout = tmp_path / "holdout"
+    for path in ("conftest.py", "pyproject.toml", "tasks/4/test_a.py", "tasks/5/test_b.py"):
+        (holdout / path).parent.mkdir(parents=True, exist_ok=True)
+        (holdout / path).write_text("x = 1\n")
+    git("init", "-q", cwd=holdout)
+    git("add", ".", cwd=holdout)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "oracles", cwd=holdout)
+
+    sha = factory.holdout_snapshot(4, tmp_path / "out", holdout=holdout)
+    assert sha == git("rev-parse", "HEAD", cwd=holdout).strip()
+    exported = sorted(str(p.relative_to(tmp_path / "out")) for p in (tmp_path / "out").rglob("*") if p.is_file())
+    assert exported == ["conftest.py", "pyproject.toml", "tasks/4/test_a.py"]
+
+    (holdout / "tasks/4/test_a.py").write_text("x = 2\n")
+    with pytest.raises(RuntimeError, match="uncommitted"):
+        factory.holdout_snapshot(4, tmp_path / "again", holdout=holdout)

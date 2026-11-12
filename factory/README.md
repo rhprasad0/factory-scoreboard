@@ -25,11 +25,12 @@ way. Set by T-001. Workers never change it.
 - `GET /health` returns 200.
 - The API honors `DYNAMODB_ENDPOINT` for DynamoDB Local once a store exists.
 
-## Mapping a PR to its oracle
+## Mapping a trial to its oracle
 
-Holdout oracles are keyed by issue number, in `tasks/<issue>/`. `oracle.yml` reads
-`Closes #N` from the PR body. A PR with no mapped task reports success with "no oracle
-required". It never skips, because a required check that never reports blocks the merge.
+Holdout oracles are keyed by issue number, in `tasks/<issue>/`. The local host grades a
+`/build` trial with the oracle for that issue, and refuses to start one without a task
+(since 2026-11-12; the `oracle.yml` design, which read `Closes #N` from a PR body, is
+history). A missing or empty oracle is a red `oracle` status, never a skip.
 
 ## Gates run from the base branch
 
@@ -39,8 +40,8 @@ rewrite the check that grades it.
 
 ## Merge policy
 
-Since 2026-11-11 there are no PRs: the local host lands a trial on `main` when build and
-hygiene are green, and reports critical signals without blocking (`sandbox/README.md`).
+Since 2026-11-11 there are no PRs: the local host lands a trial on `main` when build,
+hygiene and (since 2026-11-12) oracle are green, and reports critical signals without blocking (`sandbox/README.md`).
 The policy below is the original design and returns with the review station.
 
 Weeks 1-2 have auto-merge off. From week 3 a PR auto-merges when build, pass-to-pass and

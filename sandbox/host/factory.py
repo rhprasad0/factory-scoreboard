@@ -9,9 +9,10 @@ agent could write to. Work leaves the sandbox only as a git bundle, which carrie
 objects and refs, never hooks or config. See sandbox/README.md.
 
 There are no PRs. The host squashes the work onto main and refuses it outright if
-gitleaks finds a secret. Otherwise it grades that exact commit (hygiene, critical, then
-fmt/clippy/test in a fresh container), pushes the trial branch, posts the results as
-commit statuses, and fast-forwards main only if every gate is green.
+gitleaks finds a secret. Otherwise it grades that exact commit (hygiene, critical,
+fmt/clippy/test in a fresh container, then the task's holdout oracle in another), pushes
+the trial branch, posts the results as commit statuses, and fast-forwards main only if
+every gate is green.
 """
 
 import argparse
@@ -22,6 +23,7 @@ import re
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 REPO = "rhprasad0/factory-scoreboard"
@@ -33,10 +35,11 @@ STATE = SANDBOX / "state"
 ORIGIN = STATE / "origin.git"  # host-only bare clone; the agent never touches it
 HOLDOUT = Path(os.environ.get("FACTORY_HOLDOUT", Path.home() / "Documents/factory-scoreboard-holdout"))
 IMAGE = os.environ.get("FACTORY_IMAGE", "factory-agent:dev")
+ORACLE_IMAGE = os.environ.get("FACTORY_ORACLE_IMAGE", "factory-oracle:dev")
 MARKER = "<!-- factory-host -->"
 TIMEOUT_SECONDS = 30 * 60
 BUILD_TIMEOUT_SECONDS = 20 * 60
-GATES = ("build", "hygiene", "critical-classifier")  # main's required status checks
+GATES = ("build", "hygiene", "critical-classifier", "oracle")  # main's required status checks
 GITLEAKS_CONFIG = SANDBOX / "host/gitleaks.toml"
 
 PROMPT = """You are a factory worker for {repo}, working on issue #{issue}.
@@ -267,7 +270,84 @@ def build_check(job_id: str, clean: Path, job_dir: Path) -> bool:
         run("docker", "rm", "-f", name, check=False)
 
 
-def gate_statuses(classified: dict, built: bool) -> dict[str, tuple[str, str]]:
+def holdout_snapshot(issue: int, dest: Path, holdout: Path = HOLDOUT) -> str:
+    """Export the committed oracle for one task into dest; return the holdout commit.
+
+    Only the harness and this task's directory are copied, never .git or other tasks.
+    Uncommitted edits raise, so a grade always names the exact oracle it ran.
+    """
+    paths = ["conftest.py", "pyproject.toml", f"tasks/{issue}"]
+    if run("git", "-C", holdout, "status", "--porcelain", "--", *paths).stdout.strip():
+        raise RuntimeError(f"holdout has uncommitted changes in {', '.join(paths)}")
+    archive = subprocess.run(["git", "-C", holdout, "archive", "HEAD", *paths], capture_output=True, check=True)
+    dest.mkdir()
+    subprocess.run(["tar", "-x", "-C", dest], input=archive.stdout, check=True)
+    return run("git", "-C", holdout, "rev-parse", "HEAD").stdout.strip()
+
+
+def oracle_verdict(code: int | None, junit: str | None) -> tuple[str, str]:
+    """pytest exit code and JUnit XML -> (state, description), with counts only.
+
+    Green needs exit 0 and at least one scenario passed with none skipped. A failed
+    scenario is the trial's fault ("failure"); anything else, including no scenarios,
+    is the grader's ("error"). Both block landing.
+    """
+    if code is None:
+        return "error", "oracle timed out"
+    if junit is None:
+        return "error", f"oracle left no result (exit {code})"
+    root = ET.fromstring(junit)
+    suite = root if root.tag == "testsuite" else root.find("testsuite")
+    total = int(suite.get("tests", 0))
+    failed = int(suite.get("failures", 0)) + int(suite.get("errors", 0))
+    skipped = int(suite.get("skipped", 0))
+    passed = total - failed - skipped
+    if code == 0 and passed > 0 and failed == 0 and skipped == 0:
+        return "success", f"{passed}/{total} scenarios passed"
+    if code == 1 and failed > 0:
+        return "failure", f"{failed} of {total} scenarios failed"
+    return "error", f"no verdict (pytest exit {code}, {passed}/{total} passed, {skipped} skipped)"
+
+
+def oracle_check(job_id: str, job_dir: Path, holdout_sha: str) -> tuple[str, str]:
+    """The task's holdout scenarios against the exact commit that would land.
+
+    Runs after build_check, on its land.bundle, with the oracle exported to job_dir/oracle.
+    No network: crates come read-only from the grader registry the build gate just filled,
+    so trial code cannot send the scenarios anywhere. Only counts leave this function; the
+    pytest log stays in job_dir, because statuses and the issue reply are public.
+    shortcut: trial code runs in the same container as the scenarios, so it could read or
+    rewrite them; run the app and pytest in separate containers before trusting a hostile worker.
+    shortcut: no DynamoDB Local yet; start it inside this container when T-003 needs a store.
+    """
+    script = ("set -e; git clone -q --branch land /work/land.bundle /work/repo; cd /work/oracle; "
+              "python3 -m pytest -q -p no:cacheprovider --junitxml=/work/junit.xml tasks")
+    name = f"factory-oracle-{job_id}"
+    run("docker", "create", "--name", name, "--label", f"factory.job={job_id}", "--network", "none",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "1024",
+        "--memory", "8g", "--cpus", "8", "-v", "factory-reg-grader:/home/agent/.cargo/registry:ro",
+        "-e", "CARGO_NET_OFFLINE=true", "-e", "APP_DIR=/work/repo/app",
+        ORACLE_IMAGE, "bash", "-c", script)  # fmt: skip
+    run("docker", "cp", job_dir / "land.bundle", f"{name}:/work/land.bundle")
+    run("docker", "cp", job_dir / "oracle", f"{name}:/work/oracle")
+    (STATE / "current-job").write_text(job_id)
+    try:
+        try:
+            done = run("docker", "start", "-a", name, check=False, timeout=BUILD_TIMEOUT_SECONDS)
+            code, log = done.returncode, done.stdout + done.stderr
+        except subprocess.TimeoutExpired:
+            code, log = None, "timed out\n"
+        (job_dir / "oracle.log").write_text(log)
+        junit = job_dir / "oracle-junit.xml"
+        copied = run("docker", "cp", f"{name}:/work/junit.xml", junit, check=False).returncode == 0
+        state, description = oracle_verdict(code, junit.read_text() if copied else None)
+        return state, f"{description}, holdout {holdout_sha[:7]}"
+    finally:
+        (STATE / "current-job").write_text("none")
+        run("docker", "rm", "-f", name, check=False)
+
+
+def gate_statuses(classified: dict, built: bool, oracle: tuple[str, str]) -> dict[str, tuple[str, str]]:
     """context -> (state, description). Critical signals are logged, not blocking (Ryan, 2026-11-11)."""
     hygiene = classified["hygiene"]
     signals = [s for s in classified["signals"] if s != "hygiene_failed"]
@@ -277,6 +357,7 @@ def gate_statuses(classified: dict, built: bool) -> dict[str, tuple[str, str]]:
         if hygiene["passed"]
         else ("failure", "violations: " + ", ".join(hygiene["signals"])),
         "critical-classifier": ("success", ("signals (not blocking): " + ", ".join(signals)) if signals else "no signals"),
+        "oracle": oracle,
     }
 
 
@@ -371,7 +452,10 @@ def worker(issue: int, push: bool) -> dict:
             labels = [label["name"] for label in data["labels"]]
             classified = guard(clean, "refs/heads/land", labels)
             summary["signals"] = classified["signals"]
-            summary["gates"] = gate_statuses(classified, build_check(job_id, clean, job_dir))
+            built = build_check(job_id, clean, job_dir)
+            summary["holdout"] = holdout_snapshot(issue, job_dir / "oracle")
+            oracle = oracle_check(job_id, job_dir, summary["holdout"]) if built else ("failure", "not run: build failed")
+            summary["gates"] = gate_statuses(classified, built, oracle)
             red = [c for c, (state, _) in summary["gates"].items() if state != "success"]
             if push:
                 summary["outcome"] = publish(clean, sha, branch, summary["gates"])

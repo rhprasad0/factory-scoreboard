@@ -38,5 +38,6 @@ fi
 test -f certs/mitmproxy-ca-cert.pem
 
 docker build -q -t factory-agent:dev -f agent/Dockerfile . >/dev/null
+docker build -q -t factory-oracle:dev -f oracle/Dockerfile . >/dev/null  # FROM factory-agent:dev
 docker compose up -d proxy lgtm
 echo "ok: grafana at http://localhost:3300"
