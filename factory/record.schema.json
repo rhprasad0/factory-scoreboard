@@ -29,7 +29,12 @@
     "pr": {
       "type": ["integer", "null"],
       "minimum": 1,
-      "description": "The live PR, or null for a bench trial"
+      "description": "The live PR, or null for a bench trial or a no-PR trial landed by the host"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "The exact commit the graders ran on; for a no-PR trial, the host's squash commit"
     },
     "turns": { "type": ["integer", "null"], "minimum": 0 },
     "wall_clock_seconds": { "type": ["number", "null"], "minimum": 0 },

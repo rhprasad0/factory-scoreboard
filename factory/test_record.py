@@ -45,6 +45,7 @@ def test_each_trial_is_one_line(tmp_path):
         {"trial": 0},
         {"trial": True},
         {"base_commit": "abc"},
+        {"commit": "abc"},
         {"surprise": 1},
         {"graders": {"build": "pass"}},
     ],
@@ -54,6 +55,12 @@ def test_invalid_trial_writes_nothing(tmp_path, bad):
     with pytest.raises(jsonschema.ValidationError):
         record.append_record(out, trial(**bad))
     assert not out.exists()
+
+
+def test_no_pr_trial_names_its_commit(tmp_path):
+    out = tmp_path / "records.jsonl"
+    rec = record.append_record(out, trial(pr=None, commit="c" * 40))
+    assert rec["pr"] is None and rec["commit"] == "c" * 40
 
 
 def test_nan_writes_nothing(tmp_path):
