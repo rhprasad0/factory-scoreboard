@@ -78,9 +78,7 @@ def trial(case: Path, n: int, batch: str) -> dict:
     (job_dir / "in").mkdir(parents=True)
     f.run("git", "-C", f.ORIGIN, "bundle", "create", "--quiet", job_dir / "in/base.bundle", "HEAD", "main")
     (job_dir / "in/branch").write_text(branch)
-    (job_dir / "in/prompt.txt").write_text(
-        f.PROMPT.format(repo=f.REPO, issue=ISSUE, branch=branch, body=case.read_text())
-    )
+    (job_dir / "in/prompt.txt").write_text(f.prompt(ISSUE, branch, case.read_text()))
 
     code, seconds = f.run_sandbox(job_id, ISSUE, job_dir, key)
     transcript = job_dir / "transcript.jsonl"

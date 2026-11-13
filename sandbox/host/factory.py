@@ -41,6 +41,8 @@ TIMEOUT_SECONDS = 30 * 60
 BUILD_TIMEOUT_SECONDS = 20 * 60
 GATES = ("build", "hygiene", "critical-classifier", "oracle")  # main's required status checks
 GITLEAKS_CONFIG = SANDBOX / "host/gitleaks.toml"
+ASK = "NEEDS CLARIFICATION"  # first line of a final message that asks instead of building
+NEEDS_ANSWER = "factory:needs-answer"  # while set, Ryan's next comment on the issue is his answer
 
 PROMPT = """You are a factory worker for {repo}, working on issue #{issue}.
 
@@ -55,6 +57,18 @@ The issue body below is your only spec.
 {body}
 </spec>
 """
+
+
+def prompt(issue: int, branch: str, body: str, clarifications: str = "") -> str:
+    text = PROMPT.format(repo=REPO, issue=issue, branch=branch, body=body)
+    if clarifications:
+        text += ("\nThe repo owner answered your questions on the issue. Treat this as part of the spec.\n\n"
+                 f"<clarifications>\n{clarifications}\n</clarifications>\n")  # fmt: skip
+    return text
+
+
+def asked(result: dict) -> bool:
+    return (result.get("result") or "").strip().split("\n", 1)[0].strip() == ASK
 
 
 def run(*args: str | Path, cwd: Path | None = None, check: bool = True, **kw) -> subprocess.CompletedProcess:
@@ -273,7 +287,7 @@ def build_check(job_id: str, clean: Path, job_dir: Path) -> bool:
         run("docker", "rm", "-f", name, check=False)
 
 
-def holdout_snapshot(issue: int, dest: Path, holdout: Path = HOLDOUT) -> str:
+def holdout_snapshot(issue: int | str, dest: Path, holdout: Path = HOLDOUT) -> str:
     """Export the committed oracle for one task into dest; return the holdout commit.
 
     Only the harness and this task's directory are copied, never .git or other tasks.
@@ -430,7 +444,9 @@ def worker(issue: int, push: bool) -> dict:
     base = refresh_origin()
     run("git", "-C", ORIGIN, "bundle", "create", "--quiet", job_dir / "in/base.bundle", "HEAD", "main")
     (job_dir / "in/branch").write_text(branch)
-    (job_dir / "in/prompt.txt").write_text(PROMPT.format(repo=REPO, issue=issue, branch=branch, body=data["body"]))
+    pages = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{REPO}/issues/{issue}/comments?per_page=100").stdout)
+    clarifications = thread([c for page in pages for c in page])
+    (job_dir / "in/prompt.txt").write_text(prompt(issue, branch, data["body"], clarifications))
     holdout = holdout_snapshot(issue, job_dir / "oracle")  # before the paid run; pins the oracle the trial is graded on
 
     code, seconds = run_sandbox(job_id, issue, job_dir)
@@ -439,11 +455,16 @@ def worker(issue: int, push: bool) -> dict:
     container = (job_dir / "container_id").read_text()[:31]  # Tetragon's container tag
     summary = {"job_id": job_id, "branch": branch, "base_commit": base, "exit": code,
                "wall_clock_seconds": round(seconds, 1), "turns": result.get("num_turns"), "commit": None, "holdout": holdout,
+               "clarifications": clarifications or None,
                "dashboard": f"http://localhost:3300/d/factory-run/?var-job={job_id}&var-container={container}"}  # fmt: skip
 
     if transcript.exists():
         summary["evidence"] = evidence_comment(result, friction(transcript, job_dir), job_id)
-    if not (job_dir / "work.bundle").exists():
+    if asked(result):  # never land a guess next to an open critical question, even if it committed
+        summary["outcome"] = "needs clarification"
+        if push:
+            run("gh", "issue", "edit", str(issue), "--repo", REPO, "--add-label", NEEDS_ANSWER)
+    elif not (job_dir / "work.bundle").exists():
         summary["outcome"] = "no commits"
     else:
         clean = import_bundle(job_dir, branch)
@@ -480,30 +501,66 @@ def report(summary: dict) -> str:
         lines += ["| gate | result | |", "| --- | --- | --- |"]
         lines += [f"| {c} | {state} | {desc} |" for c, (state, desc) in summary["gates"].items()]
         lines.append("")
+    if summary["outcome"] == "needs clarification":
+        lines += ["The worker needs answers before it builds. Reply in a comment; your reply starts the next trial.", ""]
     lines += [f"[dashboard]({summary['dashboard']}) (local)", "", summary.get("evidence", "")]
     return neutralize_mentions("\n".join(lines))
 
 
-def build_requests(comments: list[dict]) -> list[tuple[int, int]]:
-    """(comment id, issue number) for each comment that asks for a trial.
+def owner_issue(c: dict) -> int | None:
+    """The issue number if this is Ryan's own comment on an issue, else None.
 
-    Only Ryan's own issue comments whose whole body is /build count. The repo is
-    public, the host posts as Ryan too, and PR comments come back from the same
-    endpoint, so each of those checks matters.
+    The repo is public and PR comments come back from the same endpoint, so each check
+    matters. The host posts as Ryan too; callers tell its comments apart by MARKER.
     """
-    wanted = []
+    match = re.search(r"/issues/(\d+)$", c.get("issue_url", ""))
+    if (
+        match
+        and "/pull/" not in c.get("html_url", "")
+        and c.get("author_association") == "OWNER"
+        and c.get("user", {}).get("login") == OWNER
+    ):
+        return int(match.group(1))
+    return None
+
+
+def build_requests(comments: list[dict]) -> list[tuple[int, int]]:
+    """(comment id, issue number) for each of Ryan's comments whose whole body is /build."""
+    return [(c["id"], issue) for c in comments
+            if (issue := owner_issue(c)) and c.get("body", "").strip() == "/build" and MARKER not in c["body"]]  # fmt: skip
+
+
+def answer_requests(comments: list[dict], waiting: set[int]) -> list[tuple[int, int]]:
+    """(comment id, issue number) for Ryan's other comments on issues waiting for an answer."""
+    return [(c["id"], issue) for c in comments
+            if (issue := owner_issue(c)) in waiting and c.get("body", "").strip() not in {"", "/build"}
+            and MARKER not in c["body"]]  # fmt: skip
+
+
+def questions(body: str) -> str:
+    """The worker's NEEDS CLARIFICATION block from a host reply, or "" if it did not ask."""
+    _, found, rest = body.partition("### Worker evidence\n\n")
+    text = rest.rpartition("\n\n---\nturns: ")[0].strip()
+    return text if found and asked({"result": text}) else ""
+
+
+def thread(comments: list[dict]) -> str:
+    """The worker's questions and Ryan's replies, oldest first, for the <clarifications> block.
+
+    Comments are not instructions; this is the one exception, and only Ryan's own comments
+    (and the host's, which carry the worker's questions) get in. "" until the worker asks.
+    """
+    parts = []
     for c in comments:
-        match = re.search(r"/issues/(\d+)$", c.get("issue_url", ""))
-        if (
-            match
-            and "/pull/" not in c.get("html_url", "")
-            and c.get("author_association") == "OWNER"
-            and c.get("user", {}).get("login") == OWNER
-            and c.get("body", "").strip() == "/build"
-            and MARKER not in c.get("body", "")
-        ):
-            wanted.append((c["id"], int(match.group(1))))
-    return wanted
+        body = c.get("body", "")
+        if not owner_issue(c):
+            continue
+        if MARKER in body:
+            if q := questions(body):
+                parts.append(f"Worker asked:\n{q}")
+        elif parts and body.strip() not in {"", "/build"}:
+            parts.append(f"Owner replied:\n{body.strip()}")
+    return "\n\n".join(parts)
 
 
 def claimed(comment_id: int) -> bool:
@@ -528,18 +585,30 @@ def poll() -> None:
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 86400))
     comments = json.loads(run("gh", "api", "--paginate", "--slurp",
                               f"repos/{REPO}/issues/comments?since={since}&per_page=100").stdout)  # fmt: skip
-    for comment_id, issue in build_requests([c for page in comments for c in page]):
-        if claimed(comment_id):
-            continue
-        react(comment_id, "rocket")
+    comments = [c for page in comments for c in page]
+    labeled = json.loads(run("gh", "issue", "list", "--repo", REPO, "--label", NEEDS_ANSWER, "--json", "number").stdout)
+    waiting = {i["number"] for i in labeled}
+    jobs = [(issue, [cid]) for cid, issue in build_requests(comments) if not claimed(cid)]
+    answers: dict[int, list[int]] = {}
+    for cid, issue in answer_requests(comments, waiting):
+        if not claimed(cid):
+            answers.setdefault(issue, []).append(cid)
+    # shortcut: several replies in one pass start one trial (all are in its thread); replies
+    # posted while it runs start another only if it asks again.
+    for issue, ids in jobs + list(answers.items()):
+        for cid in ids:
+            react(cid, "rocket")
+        if issue in waiting:
+            run("gh", "issue", "edit", str(issue), "--repo", REPO, "--remove-label", NEEDS_ANSWER)
+            waiting.discard(issue)
         try:
             summary = worker(issue, push=True)
         except SystemExit as refused:
-            react(comment_id, "confused")
-            reply(issue, f"Factory refused this `/build`: {refused}")
+            react(ids[-1], "confused")
+            reply(issue, f"Factory refused this trial: {refused}")
             continue
         except Exception as error:  # report, then keep polling the next request
-            react(comment_id, "confused")
+            react(ids[-1], "confused")
             reply(issue, f"Factory job failed on the host: `{type(error).__name__}: {error}`")
             continue
         reply(issue, report(summary))
