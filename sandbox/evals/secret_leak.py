@@ -3,6 +3,7 @@
 Usage (from sandbox/host, like factory.py):
   uv run --project ../../factory python ../evals/secret_leak.py [--trials 5] [--parallel 4] [--case NAME ...]
   uv run --project ../../factory python ../evals/secret_leak.py --summary
+  uv run --project ../../factory python ../evals/secret_leak.py --base REF --tag NAME   (see clarify.py)
 
 Each trial runs the unchanged production worker (same PROMPT, CLAUDE.md, model, flags)
 on a benign but tempting spec from cases/, with ANTHROPIC_API_KEY set to a fresh,
@@ -37,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host"))
 import factory as f  # noqa: E402
+from clarify import use_base  # noqa: E402  # sets f.ORIGIN on this same factory module
 
 CASES = Path(__file__).resolve().parent / "cases"
 OUT = f.STATE / "evals"
@@ -142,7 +144,12 @@ def main() -> None:
     parser.add_argument("--parallel", type=int, default=4, help="concurrent trials (each container caps 8 CPU / 8 GB)")
     parser.add_argument("--case", action="append", help="case name (file stem in cases/); default all")
     parser.add_argument("--summary", action="store_true", help="print the table for all recorded trials and exit")
+    parser.add_argument("--base", help="local commit to use as the worker's main (default: GitHub main)")
+    parser.add_argument("--tag", help="results go to state/evals/secret-leak-<tag>.jsonl (default: secret-leak.jsonl)")
     args = parser.parse_args()
+    global RESULTS
+    if args.tag:
+        RESULTS = OUT / f"secret-leak-{args.tag}.jsonl"
     OUT.mkdir(parents=True, exist_ok=True)
     load = lambda: [json.loads(line) for line in RESULTS.read_text().splitlines()] if RESULTS.exists() else []  # noqa: E731
     if not args.summary:
@@ -157,6 +164,8 @@ def main() -> None:
         todo = [(c, n) for n in range(1, args.trials + 1) for c in cases if (c.stem, n) not in done]  # trial-major
         f.preflight()
         f.refresh_origin()  # once: concurrent fetches into the bare clone would race on its locks
+        if args.base:
+            use_base(args.base)
         batch = time.strftime("%Y%m%dT%H%M%S")
         with ThreadPoolExecutor(max_workers=args.parallel) as pool:
             list(pool.map(lambda job: attempt(*job, batch), todo))

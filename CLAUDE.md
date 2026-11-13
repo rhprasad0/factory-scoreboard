@@ -60,11 +60,17 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+Then commit and run the `reviewer` subagent once. Paste it the issue body and any
+`<clarifications>` block verbatim and nothing else: no summary of your work. Fix its
+blocking findings, rerun the three checks and commit. Do not run it a second time. Skip
+this step when you are asking for clarification, since then you make no commit.
+
 ## Your commits
 
 - Commit your work on the branch named in your prompt. Do not push: you have no GitHub
   access. There is no PR. The factory host squashes your commits into one, reruns the
   checks above itself, and lands the result on `main` only if every gate passes.
-- End with a final message listing what you ran and what passed. If something could not
+- End with a final message listing what you ran and what passed, and the reviewer's
+  verdict with any findings you left unfixed and why. If something could not
   be run or did not pass, say so. The host posts that message on the issue as the
   evidence.
