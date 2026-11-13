@@ -33,6 +33,18 @@ or main moving during the trial does. The oracle comes from the holdout checkout
 committed HEAD (uncommitted edits fail the job), and its status carries counts and the
 holdout commit only; the pytest log stays in the job directory. The host never force-pushes.
 
+**When the worker asks instead of building.** If a spec has a critical gap (see
+`CLAUDE.md`), the worker makes no commit, and its final message starts with
+`NEEDS CLARIFICATION`, followed by its questions. The host reports "needs clarification",
+never lands anything from that trial, and labels the issue `factory:needs-answer`. To answer,
+Ryan replies in a plain comment. While the label is set, his next comment is claimed with a
+rocket like `/build`, the label comes off, and a new trial starts. Every trial's prompt
+carries the issue's thread (the worker's questions and Ryan's replies) in a
+`<clarifications>` block, so a later `/build` keeps the answers. Only Ryan's own comments get
+in. Nobody else's do, whoever posts them. The oracle stays bound to the issue body: if an
+answer changes what the oracle should check, update the holdout. A one-time setup step:
+`gh label create factory:needs-answer`. `sandbox/evals/clarify.py` measures this loop.
+
 The secrets scan runs before any push, because the repo is public and a pushed trial
 branch is already a leak. It uses `host/gitleaks.toml` with `--config` and ignores
 `gitleaks:allow` comments. The host's clone has no working tree, so a `.gitleaksignore` in

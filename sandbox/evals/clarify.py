@@ -2,7 +2,11 @@
 
 Usage (from sandbox/host, like factory.py):
   uv run --project ../../factory python ../evals/clarify.py [--trials 3] [--parallel 2] [--case NAME ...]
-  uv run --project ../../factory python ../evals/clarify.py --summary
+  uv run --project ../../factory python ../evals/clarify.py --summary [--tag NAME]
+  uv run --project ../../factory python ../evals/clarify.py --base factory/clarify --tag candidate
+
+--base REF grades a factory config (CLAUDE.md, PROMPT) before it lands: the worker's main is
+the local commit REF instead of GitHub's main. --tag NAME keeps each config's results apart.
 
 Cases live in the holdout checkout, never in this repo, because the worker clones all of
 main and the labels are the answer key: HOLDOUT/tasks/clarify-<name>/ holds spec.md (sent
@@ -35,9 +39,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host"))
 import factory as f  # noqa: E402
 
 OUT = f.STATE / "evals"
-RESULTS = OUT / "clarify.jsonl"
+RESULTS = OUT / "clarify-main.jsonl"  # main() points this at clarify-<tag>.jsonl
 ISSUE = 998  # fake issue number for the prompt; nothing is posted
 LOCK = threading.Lock()
+
+
+def use_base(ref: str) -> None:
+    """Point the host's ORIGIN at a scratch bare clone whose main is the local commit `ref`.
+
+    Bundle, import and squash all read f.ORIGIN, so they stay consistent with that main.
+    """
+    sha = f.run("git", "-C", f.CHECKOUT, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
+    scratch = OUT / f"origin-{sha[:12]}.git"
+    if not scratch.exists():
+        f.run("git", "clone", "--quiet", "--bare", f.ORIGIN, scratch)
+    f.run("git", "-C", scratch, "fetch", "--quiet", f.CHECKOUT, f"+{sha}:refs/heads/main")
+    f.ORIGIN = scratch
 
 
 def cases() -> list[Path]:
@@ -107,7 +124,8 @@ def trial(case: Path, n: int, batch: str) -> dict:
     if meta["expect"] == "ask" and t1["asked"]:
         replies = [as_comment(f"{t1['evidence']}\n\n{f.MARKER}"), as_comment((case / "answer.md").read_text())]
         t2 = turn(case, f"eval-clarify-{name}-{n}-2-{stamp}", f.thread(replies), graded=True)
-    record = {"batch": batch, "case": name, "kind": meta["kind"], "expect": meta["expect"], "trial": n,
+    base = f.run("git", "-C", f.ORIGIN, "rev-parse", "main").stdout.strip()
+    record = {"batch": batch, "base": base, "case": name, "kind": meta["kind"], "expect": meta["expect"], "trial": n,
               "t1": t1, "t2": t2, **grade(meta["expect"], t1, t2)}  # fmt: skip
     with LOCK, RESULTS.open("a") as out:
         out.write(json.dumps(record) + "\n")
@@ -151,7 +169,11 @@ def main() -> None:
     parser.add_argument("--parallel", type=int, default=2, help="concurrent trials (worker, build and oracle containers each cap 8 CPU / 8 GB)")
     parser.add_argument("--case", action="append", help="case name (clarify-<name> in the holdout); default all")
     parser.add_argument("--summary", action="store_true", help="print the table for all recorded trials and exit")
+    parser.add_argument("--base", help="local commit to use as the worker's main (default: GitHub main)")
+    parser.add_argument("--tag", default="main", help="results go to state/evals/clarify-<tag>.jsonl")
     args = parser.parse_args()
+    global RESULTS
+    RESULTS = OUT / f"clarify-{args.tag}.jsonl"
     OUT.mkdir(parents=True, exist_ok=True)
     load = lambda: [json.loads(line) for line in RESULTS.read_text().splitlines()] if RESULTS.exists() else []  # noqa: E731
     if not args.summary:
@@ -169,6 +191,8 @@ def main() -> None:
                 if (c.name.removeprefix("clarify-"), n) not in done]  # fmt: skip
         f.preflight()
         f.refresh_origin()  # once: concurrent fetches into the bare clone would race on its locks
+        if args.base:
+            use_base(args.base)
         batch = time.strftime("%Y%m%dT%H%M%S")
         with ThreadPoolExecutor(max_workers=args.parallel) as pool:
             list(pool.map(lambda job: attempt(*job, batch), todo))

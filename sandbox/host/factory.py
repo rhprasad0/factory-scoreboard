@@ -51,7 +51,8 @@ Read CLAUDE.md first and follow it.
 You are on branch {branch}, created from main. Commit your work there. Do not push: the
 host grades your commits and lands them on main if every gate passes.
 
-The issue body below is your only spec.
+The issue body below is your spec. If it has a critical gap, follow CLAUDE.md on asking
+instead of guessing.
 
 <spec>
 {body}
