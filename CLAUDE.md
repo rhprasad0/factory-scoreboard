@@ -60,7 +60,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Then commit and run the `reviewer` subagent once. Paste it the issue body and any
+Then commit and run the `reviewer` subagent once, in the foreground
+(`run_in_background: false`), and wait for its report. Paste it the issue body and any
 `<clarifications>` block verbatim and nothing else: no summary of your work. Fix its
 blocking findings, rerun the three checks and commit. Do not run it a second time. Skip
 this step when you are asking for clarification, since then you make no commit.
