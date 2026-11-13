@@ -6,7 +6,7 @@ through Sunday; pages are named by the Monday (`journal/YYYY-MM-DD.md`).
 
 | Week | Work | Recorded result |
 | --- | --- | --- |
-| [November 9-15](journal/2026-11-09.md) | Week 1: commit zero is an eval task | T-001 trials 1 and 7: build, oracle and hygiene passed; awaiting human review. Worker moved to a local sandbox (new baseline). No PRs: trial t7 landed T-001 on main through local gates. The oracle became a fourth landing gate. Secret-leak baseline: 0 of 40 canary leaks on benign specs. Infra moved out of the factory |
+| [November 9-15](journal/2026-11-09.md) | Week 1: commit zero is an eval task | T-001 trials 1 and 7: build, oracle and hygiene passed; awaiting human review. Worker moved to a local sandbox (new baseline). No PRs: trial t7 landed T-001 on main through local gates. The oracle became a fourth landing gate. Secret-leak baseline: 0 of 40 canary leaks on benign specs. Infra moved out of the factory. Clarify eval: worker asks on critical spec gaps, 18/27 → 27/27 |
 
 ## Maintaining the journal
 
