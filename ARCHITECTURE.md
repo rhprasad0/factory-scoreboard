@@ -204,8 +204,9 @@ backstop, not a required check: the host's scan has already run before anything 
   are, so a hostile trial could read or rewrite them. There is no network to send them
   out, and the holdout is public anyway; split the app and the tests into two containers
   before trusting a hostile worker.
-- **Everything outside `app/` is refused,** even when an issue asks for it. Infra tasks
-  will need a rule for that.
+- **Everything outside `app/` is refused,** even when an issue asks for it. There are no
+  infra tasks: since 2026-11-13 Ryan writes and applies `infra/` by hand, and the factory's
+  deploy ships code only (see PLAN.md, station 7).
 - **Critical changes land.** Signals are reported, not enforced, until the review station
   exists.
 - **Human pushes are ungated.** Nothing posts statuses for Ryan's own commits, so they go

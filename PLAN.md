@@ -24,13 +24,14 @@ Decisions already made in conversation:
 | Workers | Claude Code in a container on Ryan's desktop, started by a `/build` comment; egress only through a logging allowlist proxy that holds an Anthropic API key. See `sandbox/README.md`. (Until 2026-11-11: GitHub Actions running `anthropics/claude-code-action@v1` with `CLAUDE_CODE_OAUTH_TOKEN`.) |
 | Eval target | The factory. The product contains no LLM so factory measurements are unconfounded |
 | Product | **Factory scoreboard**: a tiny CRUD web app that displays the factory's own eval records. Rust (axum + `lambda_http`) on Lambda `provided.al2023` arm64, API Gateway HTTP API, DynamoDB, static front end on S3 + CloudFront |
+| Infra | **Outside the factory** (since 2026-11-13). Ryan writes and applies the Terraform by hand. The factory ships application code only, with an AWS role scoped to the named resources it deploys to, and never creates, changes or deletes AWS resources or IAM. Reason: cost and blast-radius restraint. |
 | Review policy | **Auto-merge by default.** Only changes classified as potentially critical wait for Ryan's approval (see Merge policy) |
 | Time | ~10 hrs/week for 8 weeks (about 80 hours) |
 | Learning style | Build-first. Keep a weekly experiment journal (TollChat convention). Run at least one controlled factory experiment |
 
 Assumptions I am making (say so if wrong):
 
-- **Terraform** for infra, reusing the OIDC deploy-role and S3 backend patterns from `nova-toll-budget-agent/infra/` (`iam.tf`, `backend.*.hcl`, `versions.tf`). No CDK.
+- **Terraform** for infra, reusing the OIDC deploy-role and S3 backend patterns from `nova-toll-budget-agent/infra/` (`iam.tf`, `backend.*.hcl`, `versions.tf`). No CDK. Ryan runs `plan` and `apply` from his own machine; no workflow or host job runs Terraform.
 - **Python (uv)** for factory glue: graders, critical-change classifier, bench runner, record writer. Deterministic code, Ryan's strongest language, nothing the worker touches.
 - **One AWS environment** (production only). PR CI tests without deploying. No dev account, no blue-green, no preview environments.
 - Ryan is new to Rust. Rust is deliberate: the human reads implementation slowly, so the hidden oracle and the review contract carry more weight. This is realistic for factories and worth measuring, and it is why the hidden oracle, not Ryan's reading of the diff, is the reviewer of record. Local `cargo` is not installed yet (`which cargo` is empty); install `rustup` and `cargo-lambda` in week 1.
@@ -43,11 +44,11 @@ Two public repos on github.com under `rhprasad0`, public for transparency (gh is
 
 ```
 app/                 Rust workspace: crates/api (axum + lambda_http + aws-sdk-dynamodb), web/ (static HTML/JS)
-infra/               Terraform: Lambda, API GW HTTP API, DynamoDB, S3, CloudFront, OIDC roles, eval-records bucket
+infra/               Terraform: Lambda, API GW HTTP API, DynamoDB, S3, CloudFront, OIDC roles, eval-records bucket. Applied by Ryan by hand, never by the factory
 factory/             Python (uv): task schema, critical classifier, graders, bench runner, record writer
   tasks/T-###.json   Frozen task manifests: base_commit, spec_sha, critical (bool), created, source_issue
   README.md          Factory contract: what a task is, what a trial is, what gates merge
-.github/workflows/   ci.yml, worker.yml, oracle.yml, bench.yml, deploy.yml
+.github/workflows/   ci.yml, worker.yml, oracle.yml, bench.yml, deploy.yml (deploy ships code only; no Terraform)
 CLAUDE.md            Worker instructions (versioned factory config)
 JOURNAL.md + journal/YYYY-MM-DD.md   Monday-start weekly pages, TollChat convention
 ```
@@ -108,7 +109,8 @@ defects (post-merge issues that reference a PR). Report per-task tables and
 run-to-run spread, never a single aggregate.
 
 **Records**: `factory/record.py` writes one JSONL line per trial to an S3 prefix via
-OIDC from the eval job (deterministic job, narrow write-only role). The scoreboard
+OIDC from the eval job (deterministic job, narrow write-only role). Ryan provisions the
+bucket and the role in `infra/`; the factory only writes objects. The scoreboard
 product reads those records. Transcripts stay as workflow artifacts, not in git.
 
 **Reading transcripts** is a scheduled chore: every bench run, read every failing
@@ -122,10 +124,10 @@ No orchestrator. GitHub Issues + labels are the queue; workflows are the station
 1. **Spec** (human): Ryan writes the issue with acceptance criteria. May add `critical` if he already knows the change is one.
 2. **Oracle** (human in weeks 1-4, agent experiment in weeks 5-6): scenarios written from the spec alone, before any implementation exists, committed to the holdout repo. Label `oracle:ready` is required before a worker may start.
 3. **Worker** (moved to `sandbox/` on 2026-11-11: Ryan comments `/build`, the local host runs the job, grades it and lands it on `main` with no PR, see stations 4 and 6; the Actions design below is history) (`worker.yml`): `on: issues: [labeled]` with `if: github.event.label.name == 'factory:build'` on the job (the action's `label_trigger` input is for tag mode and is ignored once `prompt` is set, confirmed in `src/modes/detector.ts` at v1.0.269). claude-code-action in automation mode, prompt = issue body + CLAUDE.md conventions, must put `Closes #N` in the PR body. Opens a **draft** PR with an evidence comment (what it ran, what passed). Bash allowlist: `cargo`, `git`, `gh pr`, plus file tools. `cargo` fetches crates, so the job has network; what it does not have is any AWS credential.
-4. **Deterministic CI** (since 2026-11-11 run by the local host inside the worker job, on the squashed commit before it lands; `ci.yml` is deleted. The original design follows) (`ci.yml` on `pull_request`): build, pass-to-pass, hygiene, and the critical-change classifier (`factory/critical.py`, see Merge policy). On PRs touching `infra/**`, a read-only `terraform plan` job posts the plan so Ryan sees the exact effects before approving.
+4. **Deterministic CI** (since 2026-11-11 run by the local host inside the worker job, on the squashed commit before it lands; `ci.yml` is deleted. The original design follows) (`ci.yml` on `pull_request`): build, pass-to-pass, hygiene, and the critical-change classifier (`factory/critical.py`, see Merge policy). On PRs touching `infra/**`, a read-only `terraform plan` job posts the plan so Ryan sees the exact effects before approving. (Retired 2026-11-13: infra changes no longer go through the factory, so no factory job runs `terraform plan`.)
 5. **Oracle gate** (since 2026-11-12 a fourth host gate, `oracle`, run in its own container on the squashed commit after the build gate; the holdout comes from the host's checkout at a recorded commit and only counts reach GitHub. The original design follows) (`oracle.yml` on `pull_request`): checks out holdout, runs the task's scenarios against the PR branch with DynamoDB Local. Required status check. Logs print only opaque scenario IDs and pass/fail, never assertion text or request bodies, so a retry or a reviewer reading check logs cannot learn the holdout.
 6. **Merge policy** (since 2026-11-11: no PRs. The host fast-forwards `main` when build and hygiene are green; critical signals are reported but do not block until the review station exists. The original design follows) (`factory/merge_policy.py`, called from CI): marks the PR ready and enables GitHub native auto-merge unless the PR is critical, in which case it adds the `critical` label, requests Ryan's review, and auto-merge stays off until he approves. Merges performed with the repository `GITHUB_TOKEN` do not start `on: push` workflows, so auto-merge must be enabled with the Claude App token or a fine-grained PAT or `deploy.yml` never fires; verify in week 3 before auto-merge goes live.
-7. **Deploy** (`deploy.yml` on push to `main`): `cargo lambda build --release --arm64`, `terraform apply` via OIDC. The only job with AWS write access.
+7. **Deploy** (`deploy.yml` on push to `main`; rewritten 2026-11-13, it no longer runs `terraform apply`): `cargo lambda build --release --arm64`, then ship code only: update the code of the one Lambda function, sync `app/web/` to the one site bucket, invalidate the one CloudFront distribution. Its OIDC role is scoped to those named resources and has no IAM permissions and no create, delete or configuration actions; the exact action list is written with the Terraform. If a change needs anything else (a new resource, env var, permission or table change), the deploy fails and Ryan changes `infra/` first.
 8. **Bench** (open as of 2026-11-12: likely a bench mode of the local host that runs N trials per task from the frozen commit without landing, writing records with `commit` and `pr: null`; not decided. The original design follows) (`bench.yml`, `workflow_dispatch` with inputs: task list, N, config ref): matrix of trials, each a worker run from the frozen commit, all graders, records to S3, scratch branches deleted.
 
 ## Merge policy
@@ -139,10 +141,10 @@ from the diff and the issue, not by the model. A PR is critical if any of these 
 
 | Signal | Why it can break something that matters |
 | --- | --- |
-| Touches `infra/**` | AWS resources, IAM, DNS, cost |
+| Touches `infra/**` | AWS resources, IAM, DNS, cost. Since 2026-11-13 not a path to approval: the hygiene gate already refuses anything outside `app/`, and infra is Ryan's by hand. Kept as a tripwire |
 | Touches `.github/**` or `factory/**` or `CLAUDE.md` | Changes the factory, its gates, or its own classifier |
 | Adds, removes or upgrades a dependency (`Cargo.toml`, `Cargo.lock`, `uv.lock`) | Supply chain and behavior changes nobody specified |
-| Changes the DynamoDB item shape or table definition (files under `app/crates/api/src/model/` or any Terraform table resource) | Data compatibility; existing records |
+| Changes the DynamoDB item shape or table definition (files under `app/crates/api/src/model/`; the table definition itself is in `infra/`, outside the factory) | Data compatibility; existing records |
 | Removes or renames a public route, or changes a response schema (detected by diffing the committed OpenAPI file that the API must keep current) | Breaks the front end and any external reader |
 | Deletes or skips tests, or the hygiene grader fails | The agent may be hiding a failure |
 | Issue labeled `critical` by Ryan, or diff over 400 changed lines | Operator judgment; large changes are hard to oracle |
@@ -158,7 +160,7 @@ an escaped defect; that pair of numbers is what justifies or tightens the policy
 ## Security constraints (non-negotiable, in every phase)
 
 - Public repos, for transparency. Workflows trigger on `pull_request`, never `pull_request_target`.
-- Worker jobs hold no AWS credentials. Only `deploy.yml` and the record writer assume AWS roles, via OIDC trusting only a GitHub environment subject (`repo:rhprasad0/factory-scoreboard:environment:<name>`), never a branch subject: `worker.yml` runs on `main` with `id-token: write` for the Claude App, so it would satisfy a branch condition.
+- Worker jobs hold no AWS credentials. Only `deploy.yml` and the record writer assume AWS roles. Neither role can create, change or delete AWS resources or touch IAM: the deploy role updates one function's code, writes one bucket and invalidates one distribution; the record writer can only put objects under its prefix. Infra changes run only from Ryan's machine with his own credentials, and that includes the $50 budget, its deny action and the kill switch; the deploy role cannot change or remove them. Because a deploy ships whatever code landed, the Lambda execution role is the real blast radius and stays scoped to the one table (and the records prefix when the scoreboard reads S3). Both roles assume via OIDC trusting only a GitHub environment subject (`repo:rhprasad0/factory-scoreboard:environment:<name>`), never a branch subject: `worker.yml` runs on `main` with `id-token: write` for the Claude App, so it would satisfy a branch condition.
 - `claude-code-action` runs with `timeout-minutes`, `--max-turns`, a tool allowlist, and a `concurrency` group so one worker runs at a time.
 - The OAuth token belongs to Ryan, expires in one year, and bills his Max usage. Record the renewal date in `factory/README.md`. Every commit and PR appears as Ryan or the Claude app.
 - `CLAUDE.md` tells workers not to read, clone or train on `factory-scoreboard-holdout`.
@@ -185,18 +187,23 @@ Read first: Stripe "Minions" part 2 (blueprints, two CI rounds); StrongDM "Softw
 (Rewritten 2026-11-12 for the no-PR local factory. The original items assumed PRs, Actions workers and `oracle.yml`; they are in git history.)
 
 1. **Oracle gate first.** A fourth host gate, `oracle`: the task's holdout scenarios run against the squashed commit in a container, after the build gate and before main moves, and `oracle` joins main's required checks. Without it every task lands on build and hygiene alone. DynamoDB Local joins the gate when T-003 needs a store.
-2. **Terraform in `infra/`**: Lambda, HTTP API, DynamoDB table, S3 + CloudFront, eval-records bucket, two OIDC roles (deploy, record-writer). Copy patterns from `nova-toll-budget-agent/infra/iam.tf` and backend config. `deploy.yml` on push to `main`; the host pushes main over HTTPS with Ryan's `gh` login, which should start `on: push` workflows (a push by Ryan's own SSH key did on `373b9e2`); confirm on the first host landing now that `gitleaks.yml` is on main. Open: whether a host landing should wait for the deploy, and how a failed deploy is reported.
+2. **Infra, by hand, outside the factory** (changed 2026-11-13): Ryan writes Terraform in `infra/` for the Lambda, HTTP API, DynamoDB table, S3 + CloudFront, eval-records bucket and two OIDC roles (app-deploy, record-writer), copying patterns from `nova-toll-budget-agent/infra/iam.tf` and backend config, and applies it from his own machine. Then **`deploy.yml`** on push to `main` ships code only (station 7) and never runs Terraform; the host pushes main over HTTPS with Ryan's `gh` login, which should start `on: push` workflows (a push by Ryan's own SSH key did on `373b9e2`); confirm on the first host landing now that `gitleaks.yml` is on main. Open: whether a host landing should wait for the deploy, and how a failed deploy is reported.
+
+   **Cost controls, by hand, before the first `apply` of anything billable** (added 2026-11-13): a **hard cap of $50 per month** on AWS spend. AWS has no native spend cap, so Ryan builds one in `infra/`:
+   - **Budget and alerts:** an AWS Budgets monthly cost budget of $50 (Budgets lives in `us-east-1`), emailing Ryan at lower actual-spend thresholds and when forecast spend reaches $50.
+   - **Automatic stop at $50 actual, no human in the loop.** A budget action applies a deny policy to the app-deploy, record-writer and Lambda execution roles. That stops deploys and data access but not public traffic, so the budget's SNS notification also triggers a kill switch that stops requests: Lambda reserved concurrency set to 0 and the CloudFront distribution disabled. Open: whether the HTTP API stage also needs throttling to zero so its `execute-api` URL stops accruing request charges.
+   - **Rate limits that bound spend between budget checks:** Lambda reserved concurrency, API Gateway stage throttling, DynamoDB on-demand maximum throughput, CloudWatch log retention, and an S3 lifecycle rule on the records bucket if it grows. Values are sized when the Terraform is written.
 3. **Bench**: N trials per task from the frozen commit, all graders, records written with `commit` and `pr: null`, nothing landed. Open: a bench mode of the local host (likely, since workers no longer run on Actions) or `bench.yml`.
-4. **Freeze T-002 through T-005** (the frozen local-run contract, records table schema with `DYNAMODB_ENDPOINT` override, POST /records, GET /records, static index page). Each gets a spec issue, an oracle in the holdout repo, `oracle:ready`, then `/build`; the host lands it if every gate is green.
+4. **Freeze T-002 through T-005** (the frozen local-run contract, records table schema with `DYNAMODB_ENDPOINT` override, POST /records, GET /records, static index page). Each gets a spec issue, an oracle in the holdout repo, `oracle:ready`, then `/build`; the host lands it if every gate is green. A task that needs a new AWS resource or permission (T-003's table, for example) waits until Ryan has applied that infra; then the issue is written.
 5. **First baseline**: bench T-001..T-005, N=3. The worker now bills per token on an API key, so measure dollars per trial alongside turns and wall-clock, and set the bench cadence from that measurement, not from hope.
 
-Done when: `https://<cloudfront>/` serves the index page, 5 tasks frozen, a baseline table with spread is in the journal.
+Done when: the $50 cap has been tripped once on purpose (a temporary low budget) and stopped traffic, `https://<cloudfront>/` serves the index page, 5 tasks frozen, a baseline table with spread is in the journal.
 
 ### Weeks 3-4: Production flow builds the scoreboard
 
 Read first: Anthropic eval guidance on graders and reading transcripts; Vercel "Verify in fresh context" and "Publish a draft".
 
-1. Write 15 to 20 issues for the scoreboard MVP: ingest records from S3, list tasks, per-task pass@1 and pass^3, per-config comparison view, cost column, filters. Include a few that the classifier should flag (a dependency add, a schema change) so the critical path is exercised.
+1. Write 15 to 20 issues for the scoreboard MVP: ingest records from S3, list tasks, per-task pass@1 and pass^3, per-config comparison view, cost column, filters. Include a few that the classifier should flag (a dependency add, a schema change) so the critical path is exercised. Issues that need new infra (reading records from S3, a new index) get Ryan's `infra/` change applied first; the issue then covers only the application.
 2. Run them through the factory. Every merged PR becomes a frozen task the same day (`factory/freeze.py` fills the manifest from the merged PR and the issue).
 3. Turn auto-merge on. First confirm an auto-merged PR triggers `deploy.yml` (the `GITHUB_TOKEN` caveat above). Log every auto-merge and every critical flag in the journal.
 4. Judge calibration: hand-label 20 to 30 PR diffs with a binary scope verdict, run the judge, compute Cohen's kappa. Below 0.8, fix the rubric, not the model. Record the agreement figure before the judge's score appears in any table.
@@ -232,7 +239,7 @@ End-to-end check at the end of week 1 and again after every phase (steps 2-4 and
 2. `/build` on the issue: the host runs the worker in the sandbox, squashes its work, and posts `build`, `hygiene`, `critical-classifier` and `oracle` on the commit. The worker container holds no AWS or GitHub credentials (check `sandbox_args` and the proxy flow log).
 3. The `oracle` status fails if the oracle scenario is deliberately wrong, and passes when corrected.
 4. A green trial fast-forwards main without an admin bypass; a red gate leaves main untouched. Critical signals are reported, not blocking, until the review station exists.
-5. On landing, `deploy.yml` applies and the CloudFront URL reflects the change.
+5. On landing, `deploy.yml` ships the new Lambda code and static files and the CloudFront URL reflects the change. The deploy role is refused on any mutating call outside its scope (for example `lambda:UpdateFunctionConfiguration` or `iam:*`).
 6. A bench run on that task with N=3 writes three JSONL records to S3 and the scoreboard displays them.
 
 ## Bootstrap (done 2026-11-08)
@@ -246,7 +253,7 @@ week 1.
 
 Orchestrator or station graph (GitHub labels + workflows suffice); multiple agent
 harnesses (Claude only); cloud scheduled tasks (transcript and cost export unverified;
-revisit if Actions minutes bind); dev/prod environments and blue-green; digital twins
+revisit if Actions minutes bind); factory-managed infra (since 2026-11-13: Ryan owns `infra/` by hand); dev/prod environments and blue-green; digital twins
 (no third-party services); an LLM in the product; Claude Code Review product (may
 need a plan Ryan does not have; the action's review example covers it if wanted).
 
@@ -254,6 +261,8 @@ need a plan Ryan does not have; the action's review example covers it if wanted)
 
 - Max usage windows may cap how many bench trials run per day. Week 2 measures this before the suite grows. (2026-11-12: the worker now bills per token on an API key, so the limit is dollars, not a usage window.)
 - Rust build times on `ubuntu-latest` without a warm cache will be several minutes per job; `actions/cache` on `~/.cargo` and `target/` is in `ci.yml` from day one. The 30-minute worker timeout may be tight on a cold build; week 1 measures it. (Measured: a cold build fit easily, and builds now run locally.)
+- The $50 cap reacts to lagging data: budgets evaluate about once a day and billing data trails usage, so spend can pass $50 before the stop fires. The rate limits bound the overshoot to roughly their maximum spend rate over that lag; size them so that figure stays small.
+- The oracle runs against DynamoDB Local, so a green landing can still fail in AWS when the infra or permission it needs has not been applied. The deploy then fails on main; Ryan applies the infra and redeploys.
 - Auto-merge with the repository `GITHUB_TOKEN` can land PRs on `main` without a deploy. Verified in week 3 before auto-merge is enabled. (As of 2026-11-12 there is no auto-merge; the host pushes main with Ryan's `gh` login, which should start push workflows. Confirm on the first host landing.)
 - Auto-merge by default in a language Ryan reads slowly puts the whole weight on the hidden oracles and the critical classifier. A thin oracle lets a wrong change ship; the week 5-6 audit is where that shows up.
 - The classifier is path- and diff-based, so a behavior-breaking change inside an existing route that keeps the OpenAPI schema unchanged is not critical by rule. The oracle is the only defense there. Say so in the README.
