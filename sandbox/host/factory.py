@@ -462,9 +462,7 @@ def worker(issue: int, push: bool) -> dict:
     if transcript.exists():
         summary["evidence"] = evidence_comment(result, friction(transcript, job_dir), job_id)
     if asked(result):  # never land a guess next to an open critical question, even if it committed
-        summary["outcome"] = "needs clarification"
-        if push:
-            run("gh", "issue", "edit", str(issue), "--repo", REPO, "--add-label", NEEDS_ANSWER)
+        summary["outcome"] = "needs clarification"  # poll() labels the issue once the questions are posted
     elif not (job_dir / "work.bundle").exists():
         summary["outcome"] = "no commits"
     else:
@@ -531,11 +529,21 @@ def build_requests(comments: list[dict]) -> list[tuple[int, int]]:
             if (issue := owner_issue(c)) and c.get("body", "").strip() == "/build" and MARKER not in c["body"]]  # fmt: skip
 
 
-def answer_requests(comments: list[dict], waiting: set[int]) -> list[tuple[int, int]]:
-    """(comment id, issue number) for Ryan's other comments on issues waiting for an answer."""
+def answer_requests(comments: list[dict], asked_at: dict[int, str]) -> list[tuple[int, int]]:
+    """(comment id, issue number) for Ryan's other comments posted after the worker's last questions.
+
+    asked_at maps each issue waiting for an answer to its newest question comment's created_at
+    (GitHub's ISO 8601 UTC strings compare in time order). Older notes are not answers.
+    """
     return [(c["id"], issue) for c in comments
-            if (issue := owner_issue(c)) in waiting and c.get("body", "").strip() not in {"", "/build"}
-            and MARKER not in c["body"]]  # fmt: skip
+            if (issue := owner_issue(c)) in asked_at and c.get("created_at", "") > asked_at[issue]
+            and c.get("body", "").strip() not in {"", "/build"} and MARKER not in c["body"]]  # fmt: skip
+
+
+def last_question(comments: list[dict]) -> str:
+    """created_at of the newest host reply that carries worker questions, or ""."""
+    return max((c["created_at"] for c in comments
+                if owner_issue(c) and MARKER in c.get("body", "") and questions(c["body"])), default="")  # fmt: skip
 
 
 def questions(body: str) -> str:
@@ -589,9 +597,14 @@ def poll() -> None:
     comments = [c for page in comments for c in page]
     labeled = json.loads(run("gh", "issue", "list", "--repo", REPO, "--label", NEEDS_ANSWER, "--json", "number").stdout)
     waiting = {i["number"] for i in labeled}
+    asked_at = {}
+    for issue in waiting:
+        pages = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{REPO}/issues/{issue}/comments?per_page=100").stdout)
+        if at := last_question([c for page in pages for c in page]):
+            asked_at[issue] = at
     jobs = [(issue, [cid]) for cid, issue in build_requests(comments) if not claimed(cid)]
     answers: dict[int, list[int]] = {}
-    for cid, issue in answer_requests(comments, waiting):
+    for cid, issue in answer_requests(comments, asked_at):
         if not claimed(cid):
             answers.setdefault(issue, []).append(cid)
     # shortcut: several replies in one pass start one trial (all are in its thread); replies
@@ -613,6 +626,8 @@ def poll() -> None:
             reply(issue, f"Factory job failed on the host: `{type(error).__name__}: {error}`")
             continue
         reply(issue, report(summary))
+        if summary["outcome"] == "needs clarification":  # after the reply, so a failure here loses nothing
+            run("gh", "issue", "edit", str(issue), "--repo", REPO, "--add-label", NEEDS_ANSWER)
     since_file.write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started - 300)))
 
 

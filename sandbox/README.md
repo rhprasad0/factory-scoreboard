@@ -37,7 +37,7 @@ holdout commit only; the pytest log stays in the job directory. The host never f
 `CLAUDE.md`), the worker makes no commit, and its final message starts with
 `NEEDS CLARIFICATION`, followed by its questions. The host reports "needs clarification",
 never lands anything from that trial, and labels the issue `factory:needs-answer`. To answer,
-Ryan replies in a plain comment. While the label is set, his next comment is claimed with a
+Ryan replies in a plain comment. While the label is set, his first comment posted after the questions is claimed with a
 rocket like `/build`, the label comes off, and a new trial starts. Every trial's prompt
 carries the issue's thread (the worker's questions and Ryan's replies) in a
 `<clarifications>` block, so a later `/build` keeps the answers. Only Ryan's own comments get

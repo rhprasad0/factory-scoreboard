@@ -167,23 +167,39 @@ def test_prompt_adds_clarifications_only_when_there_are_some():
     assert "<clarifications>\nOwner replied:\nyes\n</clarifications>" in factory.prompt(9, "b", "Add /x.", "Owner replied:\nyes")
 
 
-def test_owner_reply_on_a_waiting_issue_is_an_answer():
-    assert factory.answer_requests([comment(body="Soft delete.")], waiting={4}) == [(1, 4)]
+ASKED = {4: "2026-11-13T10:00:00Z"}
+LATER = "2026-11-13T10:05:00Z"
+
+
+def test_owner_reply_after_the_questions_is_an_answer():
+    assert factory.answer_requests([comment(body="Soft delete.", created_at=LATER)], ASKED) == [(1, 4)]
 
 
 @pytest.mark.parametrize(
-    "over, waiting",
+    "over, asked_at",
     [
-        ({"body": "Soft delete."}, set()),
-        ({"body": "Soft delete.", "author_association": "NONE", "user": {"login": "stranger"}}, {4}),
-        ({"body": "Soft delete.", "html_url": "https://github.com/rhprasad0/factory-scoreboard/pull/4#c"}, {4}),
-        ({"body": "/build"}, {4}),
-        ({"body": host_reply(QUESTIONS)}, {4}),
+        ({"body": "Soft delete."}, {}),
+        ({"body": "a note from before the questions", "created_at": "2026-11-13T09:58:00Z"}, ASKED),
+        ({"body": "Soft delete.", "author_association": "NONE", "user": {"login": "stranger"}}, ASKED),
+        ({"body": "Soft delete.", "html_url": "https://github.com/rhprasad0/factory-scoreboard/pull/4#c"}, ASKED),
+        ({"body": "/build"}, ASKED),
+        ({"body": host_reply(QUESTIONS)}, ASKED),
     ],
-    ids=["not-waiting", "stranger", "pr-comment", "build-is-not-an-answer", "host-reply"],
+    ids=["not-waiting", "before-the-questions", "stranger", "pr-comment", "build-is-not-an-answer", "host-reply"],
 )
-def test_other_comments_are_not_answers(over, waiting):
-    assert factory.answer_requests([comment(**over)], waiting) == []
+def test_other_comments_are_not_answers(over, asked_at):
+    assert factory.answer_requests([comment(**{"created_at": LATER, **over})], asked_at) == []
+
+
+def test_last_question_is_the_newest_host_reply_that_asked():
+    comments = [
+        comment(body=host_reply(QUESTIONS), created_at="2026-11-13T09:00:00Z"),
+        comment(body=host_reply(QUESTIONS), created_at="2026-11-13T10:00:00Z"),
+        comment(body=host_reply("Done."), created_at="2026-11-13T11:00:00Z"),
+        comment(body=QUESTIONS, created_at="2026-11-13T12:00:00Z"),  # Ryan quoting it, no marker
+    ]
+    assert factory.last_question(comments) == "2026-11-13T10:00:00Z"
+    assert factory.last_question([comment(body="hi", created_at=LATER)]) == ""
 
 
 def test_report_tells_ryan_how_to_answer():
